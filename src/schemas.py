@@ -35,6 +35,15 @@ questions = Ticket(**question)
 
 type Probability = Annotated[float, Field(ge=0, le=1)]
 
+type DocumentType = Literal["invoice_draft", "transfer_draft", "none"]
+type NoneReasonType = Literal[
+    "no_request",
+    "other_document",
+    "cancelled",
+]
+
+type DataSplit = Literal["dev", "test"]
+type SplitFilter = Literal["dev", "test", "all"]
 
 class Message(BaseModel):
     sender: Literal["customer", "support"]
