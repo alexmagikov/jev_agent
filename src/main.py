@@ -8,14 +8,13 @@ from pydantic import BaseModel, Field, ValidationError
 from src.cases.document_type import DocumentMessage
 from src.client import AsyncJev
 from src.pipeline import classify_document
-from src.schemas import DocumentType
+from src.schemas import DocumentType, SplitFilter, DataSplit
 from src.settings import JevClientSettings
 
-
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_INPUT_PATH = REPOSITORY_ROOT / "cases.jsonl"
-DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "document_types.jsonl"
+
+DEFAULT_INPUT_PATH = PROJECT_ROOT / "data" / "cases.jsonl"
+DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "outputs" / "document_types.jsonl"
 
 
 class InputCase(BaseModel):
