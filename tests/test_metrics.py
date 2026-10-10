@@ -124,3 +124,40 @@ def test_rejects_duplicate_case_ids() -> None:
 
     with pytest.raises(ValueError, match="C1"):
         calculate_metrics(duplicate_labels, [])
+
+
+def test_lists_document_type_mismatches_by_case_id() -> None:
+    labels = [
+        {"case_id": "C1", "document_type": "invoice_draft", "fields": {}},
+        {"case_id": "C2", "document_type": "transfer_draft", "fields": {}},
+        {"case_id": "C3", "document_type": "none", "fields": {}},
+        {"case_id": "C4", "document_type": "none", "fields": {}},
+    ]
+    predictions = [
+        {"case_id": "C3", "document_type": "invoice_draft", "confidence": 0.0},
+        {"case_id": "C2", "document_type": "transfer_draft"},
+        {"case_id": "C1", "document_type": "none", "confidence": 0.73},
+    ]
+
+    report = calculate_metrics(labels, predictions)
+
+    assert report.model_dump()["document_type_mismatches"] == [
+        {"case_id": "C1", "expected": "invoice_draft", "predicted": "none",
+         "confidence": 0.73},
+        {"case_id": "C3", "expected": "none", "predicted": "invoice_draft",
+         "confidence": 0.0},
+        {"case_id": "C4", "expected": "none", "predicted": None,
+         "confidence": None},
+    ]
+    assert report.document_type_correct == 1
+    assert report.document_type_accuracy == 0.25
+    assert report.missing_predictions == ["C4"]
+
+
+def test_has_no_document_type_mismatches_when_types_match() -> None:
+    rows = [{"case_id": "C1", "document_type": "none", "fields": {}}]
+
+    report = calculate_metrics(rows, rows)
+
+    assert report.document_type_mismatches == []
+    assert report.document_type_accuracy == 1.0

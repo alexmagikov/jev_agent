@@ -3,7 +3,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from src.schemas import DocumentType
+from src.schemas import DocumentType, Probability
 
 
 type JsonRow = Mapping[str, Any]
@@ -26,6 +26,15 @@ class FieldMetrics(BaseModel):
     unsupported_fill_rate: float
 
 
+class DocumentTypeMismatch(BaseModel):
+    """Несовпадение типа; predicted=None означает отсутствие предсказания."""
+
+    case_id: str
+    expected: DocumentType
+    predicted: DocumentType | None
+    confidence: Probability | None = None
+
+
 class MetricsReport(BaseModel):
     """Итог сравнения предсказаний c правильными результатами."""
 
@@ -34,6 +43,7 @@ class MetricsReport(BaseModel):
     missing_predictions: list[str]
     document_type_correct: int
     document_type_accuracy: float
+    document_type_mismatches: list[DocumentTypeMismatch]
     fields: FieldMetrics
     by_document_type: dict[str, FieldMetrics]
 
@@ -66,13 +76,23 @@ def calculate_metrics(
     missing_predictions = [
         case_id for case_id in labels_by_id if case_id not in predictions_by_id
     ]
-    document_type_correct = sum(
-        predictions_by_id.get(case_id, {}).get("document_type")
-        == label["document_type"]
+    document_type_mismatches = [
+        DocumentTypeMismatch(
+            case_id=case_id,
+            expected=label["document_type"],
+            predicted=predictions_by_id.get(case_id, {}).get("document_type"),
+            confidence=predictions_by_id.get(case_id, {}).get("confidence"),
+        )
         for case_id, label in labels_by_id.items()
-    )
+        if predictions_by_id.get(case_id, {}).get("document_type")
+        != label["document_type"]
+    ]
+    document_type_correct = len(labels_by_id) - len(document_type_mismatches)
 
-    label_fields = _fillable_fields(labels_by_id, fields_required=True)
+    label_fields = _fillable_fields(
+        labels_by_id, 
+        fields_required=True
+    )
     predicted_fields = _fillable_fields(
         predictions_by_id,
         fields_required=False,
@@ -95,6 +115,7 @@ def calculate_metrics(
             document_type_correct,
             len(labels_by_id),
         ),
+        document_type_mismatches=document_type_mismatches,
         fields=_field_metrics(label_fields, predicted_fields),
         by_document_type=by_document_type,
     )

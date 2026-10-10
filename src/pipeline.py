@@ -8,13 +8,14 @@ from src.cases.document_type import (
     reason_text,
 )
 from src.client import AsyncJev
-from src.schemas import DocumentType
+from src.schemas import DocumentType, Probability
 
 
 class DocumentTypeDecision(BaseModel):
     """Результат первого этапа обработки диалога."""
 
     document_type: DocumentType
+    confidence: Probability
     reason: str | None = None
 
 
@@ -36,5 +37,6 @@ async def classify_document(
 
     return DocumentTypeDecision(
         document_type=document_type.choice,
+        confidence=document_type.confidence,
         reason=reason_text(document_type, none_reason),
     )

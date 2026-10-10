@@ -25,7 +25,7 @@ class FakeJev:
             answers=SimpleNamespace(
                 document_type=DocumentTypeAnswer(
                     choice=self.document_type,
-                    confidence=1.0,
+                    confidence=0.73,
                     probabilities={
                         "invoice_draft": float(self.document_type == "invoice_draft"),
                         "transfer_draft": float(self.document_type == "transfer_draft"),
@@ -59,6 +59,7 @@ def test_classifies_none_and_returns_its_reason() -> None:
     )
 
     assert decision.document_type == "none"
+    assert decision.confidence == 0.73
     assert decision.reason == (
         "Пользователь отменил ранее сделанный запрос на подготовку черновика."
     )
@@ -86,4 +87,5 @@ def test_ignores_none_reason_for_supported_document() -> None:
     )
 
     assert decision.document_type == "invoice_draft"
+    assert decision.confidence == 0.73
     assert decision.reason is None
