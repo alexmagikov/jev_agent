@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from src.document_schemas import (
+from src.schemas.document_schemas import (
     DocumentResult, FieldResult, InvoiceFields, InvoiceItem, ISODate, Number,
     TransferFields,
 )

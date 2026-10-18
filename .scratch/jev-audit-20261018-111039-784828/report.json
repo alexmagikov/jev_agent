@@ -1,0 +1,146 @@
+{
+  "method": "paired verification-only: shared LLM classification and identical seed",
+  "attempted_cases": 1,
+  "complete_pairs": 0,
+  "incomplete_cases": [
+    "C001"
+  ],
+  "field_changes": {
+    "corrected": 0,
+    "regressed": 0,
+    "details": []
+  },
+  "before": {
+    "strict_metrics": {
+      "total_cases": 1,
+      "predicted_cases": 0,
+      "missing_predictions": [
+        "C001"
+      ],
+      "document_type_correct": 0,
+      "document_type_accuracy": 0.0,
+      "document_type_mismatches": [
+        {
+          "case_id": "C001",
+          "expected": "invoice_draft",
+          "predicted": null,
+          "confidence": null
+        }
+      ],
+      "fields": {
+        "true_positives": 0,
+        "false_positives": 0,
+        "false_negatives": 6,
+        "precision": 0.0,
+        "recall": 0.0,
+        "value_accuracy": null,
+        "evidence_accuracy": null,
+        "unsupported_fill_rate": 0.0
+      },
+      "by_document_type": {
+        "invoice_draft": {
+          "true_positives": 0,
+          "false_positives": 0,
+          "false_negatives": 6,
+          "precision": 0.0,
+          "recall": 0.0,
+          "value_accuracy": null,
+          "evidence_accuracy": null,
+          "unsupported_fill_rate": 0.0
+        },
+        "transfer_draft": {
+          "true_positives": 0,
+          "false_positives": 0,
+          "false_negatives": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "value_accuracy": null,
+          "evidence_accuracy": null,
+          "unsupported_fill_rate": 0.0
+        }
+      }
+    },
+    "expected_fillable_values": 6,
+    "correct_expected_values": 0
+  },
+  "after": {
+    "strict_metrics": {
+      "total_cases": 1,
+      "predicted_cases": 0,
+      "missing_predictions": [
+        "C001"
+      ],
+      "document_type_correct": 0,
+      "document_type_accuracy": 0.0,
+      "document_type_mismatches": [
+        {
+          "case_id": "C001",
+          "expected": "invoice_draft",
+          "predicted": null,
+          "confidence": null
+        }
+      ],
+      "fields": {
+        "true_positives": 0,
+        "false_positives": 0,
+        "false_negatives": 6,
+        "precision": 0.0,
+        "recall": 0.0,
+        "value_accuracy": null,
+        "evidence_accuracy": null,
+        "unsupported_fill_rate": 0.0
+      },
+      "by_document_type": {
+        "invoice_draft": {
+          "true_positives": 0,
+          "false_positives": 0,
+          "false_negatives": 6,
+          "precision": 0.0,
+          "recall": 0.0,
+          "value_accuracy": null,
+          "evidence_accuracy": null,
+          "unsupported_fill_rate": 0.0
+        },
+        "transfer_draft": {
+          "true_positives": 0,
+          "false_positives": 0,
+          "false_negatives": 0,
+          "precision": 0.0,
+          "recall": 0.0,
+          "value_accuracy": null,
+          "evidence_accuracy": null,
+          "unsupported_fill_rate": 0.0
+        }
+      }
+    },
+    "expected_fillable_values": 6,
+    "correct_expected_values": 0
+  },
+  "conclusion": "incomplete",
+  "selected_cases": [
+    "C001"
+  ],
+  "not_attempted": [],
+  "llm_model": "deepseek-v4.1-flash",
+  "wrong_threshold": 0.7,
+  "dataset_sha256": "67a0f034d309fbb8e18561c6c79587e990d0b4dd991fd455c86c97096ffa26a3",
+  "labels_sha256": "b65fcd28410a0538f51c717629321bb3a9fe4108b69372d4a4214f7751c03d8b",
+  "llm_http_calls": 1,
+  "llm_usage": {
+    "requests": 1,
+    "retries": 0,
+    "rate_limit_errors": 0,
+    "responses": 0,
+    "usage_reports": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "elapsed_seconds": 10.028591428999789,
+    "estimated_cost": null
+  },
+  "jev_api_calls": 0,
+  "jev_models": [],
+  "jev_usage": {
+    "input_tokens": 0,
+    "output_tokens": 0
+  }
+}

@@ -5,7 +5,7 @@ from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
-from src.schemas import Probability
+from .schemas import Probability
 
 type FieldStatus = Literal["fillable", "missing", "ambiguous", "invalid"]
 type Number = Annotated[float, Field(strict=True, allow_inf_nan=False)]

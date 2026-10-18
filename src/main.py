@@ -2,22 +2,28 @@ import asyncio
 import json
 from argparse import ArgumentParser
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
 from src.cases.document_type import DocumentMessage
 from src.client import AsyncJev
+from src.schemas.document_schemas import DocumentResult
+from src.extraction import validate_messages
+from src.llm import AsyncLLMExtractor, LLMUsage
 from src.metrics import FieldMetrics, MetricsReport, calculate_metrics
-from src.pipeline import classify_document
-from src.schemas import DocumentType, SplitFilter, DataSplit, Probability
-from src.settings import JevClientSettings
+from src.pipeline import PipelineError, PipelineRateLimitError, classify_document, process_document
+from src.schemas.schemas import DocumentType, SplitFilter, DataSplit, Probability
+from src.settings import JevClientSettings, LLMSettings, PipelineSettings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 DEFAULT_INPUT_PATH = PROJECT_ROOT / "data" / "cases.jsonl"
 DEFAULT_LABELS_PATH = PROJECT_ROOT / "data" / "labels.jsonl"
 DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "outputs" / "document_types.jsonl"
+DEFAULT_FULL_OUTPUT_PATH = PROJECT_ROOT / "outputs" / "predictions.jsonl"
+DEFAULT_LLM_ONLY_OUTPUT_PATH = PROJECT_ROOT / "outputs" / "predictions.llm-only.jsonl"
 
 
 class InputCase(BaseModel):
@@ -41,6 +47,7 @@ def load_cases(path: Path, split: SplitFilter = "dev") -> list[InputCase]:
     """Читает и валидирует JSONL, оставляя только выбранную выборку."""
 
     cases: list[InputCase] = []
+    seen: set[str] = set()
     with path.open(encoding="utf-8") as input_file:
         for line_number, line in enumerate(input_file, start=1):
             if not line.strip():
@@ -54,6 +61,10 @@ def load_cases(path: Path, split: SplitFilter = "dev") -> list[InputCase]:
                 ) from error
 
             if split == "all" or case.split == split:
+                if case.case_id in seen:
+                    raise ValueError(f"Повторяющийся case_id в {path}: {case.case_id}")
+                validate_messages(case.messages)
+                seen.add(case.case_id)
                 cases.append(case)
 
     return cases
@@ -100,13 +111,28 @@ def load_labels(path: Path, case_ids: set[str]) -> list[dict[str, object]]:
     return labels
 
 
-def write_results(results: list[DocumentTypeResult], path: Path) -> None:
+def write_results(results: list[DocumentTypeResult] | list[DocumentResult], path: Path) -> None:
     """Сохраняет по одному результату на строку в формате JSONL."""
 
     contents = "\n".join(
-        result.model_dump_json(exclude_none=True) for result in results
+        result.model_dump_json(exclude_none=isinstance(result, DocumentTypeResult))
+        for result in results
     )
-    path.write_text(contents + ("\n" if contents else ""), encoding="utf-8")
+    _write_text_atomic(contents + ("\n" if contents else ""), path)
+
+
+def _write_text_atomic(contents: str, path: Path) -> None:
+    """Заменяет один файл целиком, не оставляя оборванный JSONL при ошибке записи."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix=".jev-checkpoint-", dir=path.parent) as directory:
+        pending = Path(directory) / "checkpoint.jsonl"
+        pending.write_text(contents, encoding="utf-8")
+        pending.replace(path)
+
+
+def write_errors(errors: list[dict[str, str]], path: Path) -> None:
+    contents = "".join(json.dumps(error, ensure_ascii=False) + "\n" for error in errors)
+    _write_text_atomic(contents, path)
 
 
 async def classify_cases(
@@ -174,11 +200,16 @@ def _print_field_metrics(name: str, metrics: FieldMetrics) -> None:
         if metrics.evidence_accuracy is not None
         else "н/д"
     )
+    alias_aware_accuracy = (
+        f"{metrics.alias_aware_value_accuracy:.1%}"
+        if metrics.alias_aware_value_accuracy is not None else "н/д"
+    )
     print(
         f"{name}: \n"
         f"        precision={metrics.precision:.1%},\n"
         f"        recall={metrics.recall:.1%},\n"
         f"        value_accuracy={value_accuracy},\n"
+        f"        alias_aware_value_accuracy={alias_aware_accuracy},\n"
         f"        evidence_accuracy={evidence_accuracy},\n"
         f"        необоснованные заполнения={metrics.unsupported_fill_rate:.1%}\n"
         f"        (TP={metrics.true_positives}, FP={metrics.false_positives}, "
@@ -186,38 +217,160 @@ def _print_field_metrics(name: str, metrics: FieldMetrics) -> None:
     )
 
 
+def print_llm_usage(usage: LLMUsage) -> None:
+    """Печатает только расход и время, без диалогов и реквизитов."""
+    print(
+        f"LLM: запросов={usage.requests}, сетевых повторов={usage.retries}, "
+        f"время извлечения={usage.elapsed_seconds:.2f} с"
+    )
+    if not usage.requests:
+        return
+    if usage.rate_limit_errors:
+        print(f"  Ответов HTTP 429: {usage.rate_limit_errors}")
+    if usage.usage_reports:
+        print(
+            f"  Токены: вход={usage.input_tokens}, выход={usage.output_tokens}; "
+            f"usage получен для {usage.usage_reports}/{usage.responses} ответов"
+        )
+    else:
+        print("  Токены: н/д (API не сообщил usage)")
+    cost = f"${usage.estimated_cost:.6f}" if usage.estimated_cost is not None else "н/д"
+    print(f"  Оценка стоимости по usage и заданным тарифам: {cost}")
+
+
 async def main(
     input_path: Path = DEFAULT_INPUT_PATH,
-    output_path: Path = DEFAULT_OUTPUT_PATH,
+    output_path: Path | None = None,
     labels_path: Path = DEFAULT_LABELS_PATH,
     split: SplitFilter = "dev",
+    mode: Literal["classification", "full", "llm-only"] = "classification",
+    limit: int | None = None,
+    debug: bool = False,
+    fail_fast: bool = False,
 ) -> None:
-    settings = JevClientSettings()
-    client = AsyncJev(api_key=settings.api_key.get_secret_value())
+    if mode not in ("classification", "full", "llm-only"):
+        raise ValueError("Неизвестный режим обработки")
+    if limit is not None and limit < 1:
+        raise ValueError("--limit должен быть положительным")
+    document_mode = mode in ("full", "llm-only")
+    default_outputs = {
+        "classification": DEFAULT_OUTPUT_PATH, "full": DEFAULT_FULL_OUTPUT_PATH,
+        "llm-only": DEFAULT_LLM_ONLY_OUTPUT_PATH,
+    }
+    output_path = output_path or default_outputs[mode]
+    errors_path = output_path.with_name(output_path.stem + ".errors.jsonl")
+    protected_paths = {input_path.resolve(), labels_path.resolve()}
+    if output_path.resolve() in protected_paths or (document_mode and errors_path.resolve() in protected_paths):
+        raise ValueError("Путь результата не должен совпадать с датасетом или разметкой")
+    if document_mode and errors_path.resolve() == output_path.resolve():
+        raise ValueError("Пути результата и ошибок не должны совпадать")
 
+    # Обнаружение ошибок до платных запросов
     cases = load_cases(input_path, split)
-    results = await classify_cases(cases, client)
-    write_results(results, output_path)
+    if limit is not None:
+        cases = cases[:limit]
+    if not cases:
+        raise ValueError("В выбранной выборке нет кейсов")
+    labels = load_labels(labels_path, {case.case_id for case in cases})
+    stopped_error: PipelineError | None = None
+    client = None
+    if mode != "llm-only":
+        settings = JevClientSettings()
+        client = AsyncJev(api_key=settings.api_key.get_secret_value())
 
-    case_ids = {case.case_id for case in cases}
-    labels = load_labels(labels_path, case_ids)
+    if document_mode:
+        pipeline_settings = PipelineSettings()
+        results = []
+        errors: list[dict[str, str]] = []
+        labels_by_id = {label["case_id"]: label for label in labels}
+        if mode == "llm-only":
+            print("Режим llm-only: классификация LLM → извлечение LLM → Python; без проверок Jev.", flush=True)
+        if debug:
+            print("DEBUG: ответы модели и эталоны могут содержать реквизиты; не публикуйте вывод.", flush=True)
+        async with AsyncLLMExtractor(LLMSettings(), debug=debug) as extractor:
+            try:
+                for index, case in enumerate(cases, start=1):
+                    print(f"[{index}/{len(cases)}] {case.case_id}", flush=True)
+                    if debug:
+                        print(f"[{case.case_id}] Ожидаемый результат из labels.jsonl (не передаётся модели):", flush=True)
+                        print(json.dumps(labels_by_id[case.case_id], ensure_ascii=False, indent=2), flush=True)
+
+                    try:
+                        result = await process_document(
+                            case.case_id, case.messages, client, extractor,
+                            max_attempts=pipeline_settings.max_attempts,
+                            wrong_threshold=pipeline_settings.wrong_threshold,
+                            debug=debug,
+                            use_jev=mode == "full",
+                        )
+                    except PipelineError as error:
+                        # Не ловим Exception: ошибки программы и отмена должны быть видны.
+                        errors.append({"case_id": case.case_id, "error": str(error)})
+                        print(f"[{case.case_id}] Ошибка кейса: {error}", flush=True)
+                        if fail_fast or isinstance(error, PipelineRateLimitError):
+                            write_errors(errors, errors_path)
+                            stopped_error = error
+                            break
+                    else:
+                        results.append(result)
+                        if debug:
+                            print(f"[{case.case_id}] Итог после проверок:", flush=True)
+                            print(result.model_dump_json(indent=2), flush=True)
+                    # Снимок только текущего прогона; не смешиваем его с прежними записями.
+                    write_results(results, output_path)
+                    write_errors(errors, errors_path)
+            finally:
+                print_llm_usage(extractor.usage)
+    else:
+        results = await classify_cases(cases, client)
+        write_results(results, output_path)
+
+    evaluated_labels = labels
+    if stopped_error is not None:
+        attempted_ids = {result.case_id for result in results} | {error["case_id"] for error in errors}
+        evaluated_labels = [label for label in labels if label["case_id"] in attempted_ids]
     report = calculate_metrics(
-        labels,
-        [result.model_dump(exclude_none=True) for result in results],
+        evaluated_labels,
+        [result.model_dump(mode="json") for result in results],
     )
 
-    print(f"Обработано кейсов: {len(results)}")
-    print(f"Результат: {output_path}")
+    print(f"Обработано кейсов: {len(evaluated_labels)}")
+    if document_mode:
+        print(f"Успешно: {len(results)}; с ошибкой: {len(errors)}")
+        print(f"Ошибки: {errors_path}")
+        if stopped_error is not None:
+            print(f"Прогон остановлен. Не обработано: {len(cases) - len(evaluated_labels)}")
+            print("Частичные метрики: только обработанные кейсы, включая неуспешные.")
+        else:
+            print("Метрики учитывают все выбранные кейсы, включая неуспешные.")
+    if stopped_error is not None and not results:
+        print(f"Новых результатов нет; файл {output_path} не изменялся.")
+    else:
+        print(f"Результат: {output_path}")
     print_metrics(report)
+    if stopped_error is not None:
+        raise stopped_error
 
 
 def build_parser() -> ArgumentParser:
     parser = ArgumentParser(
-        description="Определяет тип запрошенного документа в диалогах."
+        description="Обработка документов с Jev (full) или без Jev (llm-only)."
     )
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT_PATH)
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH)
+    parser.add_argument("--output", type=Path, default=None,
+                        help="По умолчанию outputs/document_types.jsonl, predictions.jsonl (full) "
+                             "или predictions.llm-only.jsonl (llm-only).")
     parser.add_argument("--labels", type=Path, default=DEFAULT_LABELS_PATH)
+    parser.add_argument("--mode", choices=("classification", "full", "llm-only"), default="classification")
+    parser.add_argument("--limit", type=int, help="Обработать только первые N кейсов выбранной выборки.")
+    parser.add_argument(
+        "--debug", action="store_true",
+        help="В full/llm-only вывести эталон, ответ LLM и замечания проверок; вывод может содержать реквизиты.",
+    )
+    parser.add_argument(
+        "--fail-fast", action="store_true",
+        help="В full/llm-only остановиться на первой ошибке кейса; по умолчанию продолжать остальные.",
+    )
     parser.add_argument(
         "--split",
         choices=("dev", "test", "all"),
@@ -228,12 +381,24 @@ def build_parser() -> ArgumentParser:
 
 
 if __name__ == "__main__":
-    arguments = build_parser().parse_args()
-    asyncio.run(
-        main(
-            input_path=arguments.input,
-            output_path=arguments.output,
-            labels_path=arguments.labels,
-            split=arguments.split,
+    parser = build_parser()
+    arguments = parser.parse_args()
+    try:
+        asyncio.run(
+            main(
+                input_path=arguments.input,
+                output_path=arguments.output,
+                labels_path=arguments.labels,
+                split=arguments.split,
+                mode=arguments.mode,
+                limit=arguments.limit,
+                debug=arguments.debug,
+                fail_fast=arguments.fail_fast,
+            )
         )
-    )
+    except ValidationError as error:
+        # ValidationError настроек может содержать значения ключей: не печатаем её целиком.
+        fields = ", ".join(".".join(map(str, item["loc"])) for item in error.errors(include_input=False))
+        parser.exit(1, f"Ошибка валидации настроек или ответа API: {fields}\n")
+    except (PipelineError, ValueError, OSError) as error:
+        parser.exit(1, f"Ошибка: {error}\n")

@@ -161,3 +161,34 @@ def test_has_no_document_type_mismatches_when_types_match() -> None:
 
     assert report.document_type_mismatches == []
     assert report.document_type_accuracy == 1.0
+
+
+@pytest.mark.parametrize(("name", "expected", "actual", "equivalent"), [
+    ("destination_bank", "Сбер", "Сбербанк", True),
+    ("destination_bank", "Сбербанк", "Сбера", True),
+    ("source_account_kind", "расчётный счёт", "расчётный", True),
+    ("destination_bank", "Сбер", "ВТБ", False),
+    ("source_account_kind", "расчётный счёт", "накопительный", False),
+    ("destination_card_masked", "1234", "01234", False),
+])
+def test_alias_metric_is_narrow_and_does_not_replace_strict_accuracy(name, expected, actual, equivalent):
+    label = {"case_id": "C1", "document_type": "transfer_draft",
+             "fields": {name: field("fillable", expected)}}
+    prediction = {**label, "fields": {name: field("fillable", actual)}}
+    metrics = calculate_metrics([label], [prediction]).fields
+    assert metrics.value_accuracy == 0.0
+    assert metrics.alias_aware_value_accuracy == float(equivalent)
+
+
+def test_alias_metric_does_not_normalize_unrelated_fields_or_unknown_values():
+    label = {"case_id": "C1", "document_type": "invoice_draft", "fields": {
+        "recipient_name": field("fillable", "Сбер"),
+        "items": field("fillable", [{"description": "услуга", "unit": None}]),
+    }}
+    prediction = {**label, "fields": {
+        "recipient_name": field("fillable", "Сбербанк"),
+        "items": field("fillable", [{"description": "услуга", "unit": "услуг"}]),
+    }}
+    metrics = calculate_metrics([label], [prediction]).fields
+    assert metrics.alias_aware_value_accuracy == 0.0
+    assert calculate_metrics([label], []).fields.alias_aware_value_accuracy is None

@@ -1,0 +1,232 @@
+{
+  "method": "offline: actual LLM request via MockTransport; TypeSafe SDK request builder; no API calls",
+  "typesafe_sdk_version": "0.7.2",
+  "tokens": null,
+  "dataset": [
+    {
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "cases": 19
+    },
+    {
+      "split": "dev",
+      "document_type": "none",
+      "cases": 5
+    },
+    {
+      "split": "dev",
+      "document_type": "transfer_draft",
+      "cases": 4
+    },
+    {
+      "split": "test",
+      "document_type": "invoice_draft",
+      "cases": 8
+    },
+    {
+      "split": "test",
+      "document_type": "none",
+      "cases": 2
+    },
+    {
+      "split": "test",
+      "document_type": "transfer_draft",
+      "cases": 3
+    }
+  ],
+  "system_prompt": {
+    "characters": 12072,
+    "utf8_bytes": 18042
+  },
+  "c001": {
+    "user_content": {
+      "characters": 7312,
+      "utf8_bytes": 7998
+    },
+    "system_plus_user_content": {
+      "characters": 19384,
+      "utf8_bytes": 26040
+    },
+    "user_components": {
+      "document_type": {
+        "characters": 15,
+        "utf8_bytes": 15
+      },
+      "template": {
+        "characters": 953,
+        "utf8_bytes": 1479
+      },
+      "messages": {
+        "characters": 132,
+        "utf8_bytes": 192
+      },
+      "output_schema": {
+        "characters": 6130,
+        "utf8_bytes": 6230
+      },
+      "feedback": {
+        "characters": 2,
+        "utf8_bytes": 2
+      }
+    },
+    "request_and_example_sizes": {
+      "01-jev-classification.request.json": {
+        "characters": 4929,
+        "utf8_bytes": 5155
+      },
+      "03-llm-response.example.json": {
+        "characters": 1595,
+        "utf8_bytes": 1718
+      },
+      "04-python-fields.example.json": {
+        "characters": 1246,
+        "utf8_bytes": 1300
+      },
+      "05-jev-verification.request.json": {
+        "characters": 64727,
+        "utf8_bytes": 66880
+      },
+      "02-llm-extraction.request.json": {
+        "characters": 27077,
+        "utf8_bytes": 33833
+      },
+      "06-llm-retry-python.request.json": {
+        "characters": 27129,
+        "utf8_bytes": 33928
+      },
+      "07-llm-retry-jev.request.json": {
+        "characters": 29086,
+        "utf8_bytes": 35989
+      }
+    },
+    "classification_questions": {
+      "characters": 4781,
+      "utf8_bytes": 4947
+    },
+    "verification_state_components": {
+      "messages": {
+        "characters": 132,
+        "utf8_bytes": 192
+      },
+      "document_type": {
+        "characters": 15,
+        "utf8_bytes": 15
+      },
+      "template": {
+        "characters": 953,
+        "utf8_bytes": 1479
+      },
+      "proposal": {
+        "characters": 1595,
+        "utf8_bytes": 1718
+      },
+      "checked_fields": {
+        "characters": 1246,
+        "utf8_bytes": 1300
+      }
+    },
+    "verification_questions": {
+      "characters": 61091,
+      "utf8_bytes": 62481
+    },
+    "verification_question_count": 28,
+    "verification_question_kinds": {
+      "unsupported": 6,
+      "wrong_role": 6,
+      "superseded": 6,
+      "noncanonical": 1,
+      "status_wrong": 6,
+      "incomplete": 1,
+      "value_wrong": 1,
+      "ambiguous": 1
+    },
+    "base_rules_per_question": {
+      "characters": 1211,
+      "utf8_bytes": 1213
+    },
+    "base_rules_total_characters": 33908,
+    "item_rules_per_question": {
+      "characters": 2379,
+      "utf8_bytes": 2565
+    },
+    "item_rules_copies": 5,
+    "python_feedback": {
+      "characters": 52,
+      "utf8_bytes": 95
+    },
+    "jev_feedback": {
+      "characters": 141,
+      "utf8_bytes": 165
+    }
+  },
+  "first_llm_requests_by_expected_type": [
+    {
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "cases": 19,
+      "http_body_bytes": {
+        "min": 33761,
+        "median": 33826,
+        "max": 34088,
+        "total": 643421
+      },
+      "message_content_characters": {
+        "min": 19342,
+        "median": 19384,
+        "max": 19560,
+        "total": 368801
+      }
+    },
+    {
+      "split": "dev",
+      "document_type": "transfer_draft",
+      "cases": 4,
+      "http_body_bytes": {
+        "min": 26028,
+        "median": 26123.5,
+        "max": 26220,
+        "total": 104495
+      },
+      "message_content_characters": {
+        "min": 15701,
+        "median": 15766.0,
+        "max": 15836,
+        "total": 63069
+      }
+    },
+    {
+      "split": "test",
+      "document_type": "invoice_draft",
+      "cases": 8,
+      "http_body_bytes": {
+        "min": 33757,
+        "median": 33829.0,
+        "max": 33942,
+        "total": 270737
+      },
+      "message_content_characters": {
+        "min": 19339,
+        "median": 19384.0,
+        "max": 19468,
+        "total": 155164
+      }
+    },
+    {
+      "split": "test",
+      "document_type": "transfer_draft",
+      "cases": 3,
+      "http_body_bytes": {
+        "min": 26051,
+        "median": 26258,
+        "max": 26387,
+        "total": 78696
+      },
+      "message_content_characters": {
+        "min": 15714,
+        "median": 15852,
+        "max": 15949,
+        "total": 47515
+      }
+    }
+  ]
+}

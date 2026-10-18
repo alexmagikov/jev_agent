@@ -1,0 +1,1 @@
+{"case_id": "C001", "split": "dev", "before": null, "after": null, "messages": [{"id": "m1", "role": "user", "text": "Выставь счет ООО Ромашка, ИНН 7701234567, за консультационные услуги 5000 рублей, без НДС."}], "seed_proposal": null, "candidates": [], "jev_rounds": [], "status": "api_error", "error_type": "LLMError"}

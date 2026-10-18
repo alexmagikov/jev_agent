@@ -1,0 +1,256 @@
+{
+  "method": "paired verification-only: shared LLM classification and identical seed",
+  "primary_target": "exact field status and value; evidence metrics reported separately",
+  "attempted_cases": 13,
+  "complete_pairs": 13,
+  "incomplete_cases": [],
+  "field_changes": {
+    "corrected": 2,
+    "regressed": 0,
+    "details": [
+      {
+        "case_id": "C006",
+        "field": "subject",
+        "change": "corrected"
+      },
+      {
+        "case_id": "C006",
+        "field": "amount_rub",
+        "change": "corrected"
+      }
+    ]
+  },
+  "alias_aware_field_changes": {
+    "corrected": 2,
+    "regressed": 0,
+    "details": [
+      {
+        "case_id": "C006",
+        "field": "subject",
+        "change": "corrected"
+      },
+      {
+        "case_id": "C006",
+        "field": "amount_rub",
+        "change": "corrected"
+      }
+    ]
+  },
+  "item_attribute_changes": {
+    "corrected": 1,
+    "regressed": 0,
+    "details": [
+      {
+        "case_id": "C015",
+        "field": "items[0].unit",
+        "change": "corrected"
+      }
+    ]
+  },
+  "remaining_mismatches": [
+    {
+      "case_id": "C015",
+      "field": "items",
+      "permitted_alias_only": false,
+      "max_error_probability": 0.04,
+      "checks": {
+        "items::unsupported": 0.04,
+        "items::wrong_role": 0.04,
+        "items::superseded": 0.02,
+        "items::incomplete": 0.04,
+        "items[0].description::value_wrong": 0.04,
+        "items[0].quantity::value_wrong": 0.02,
+        "items[0].unit_price_rub::value_wrong": 0.02
+      },
+      "attribute_mismatches": [
+        "items[0].description"
+      ]
+    },
+    {
+      "case_id": "C030",
+      "field": "destination_bank",
+      "permitted_alias_only": true,
+      "max_error_probability": 0.03,
+      "checks": {
+        "destination_bank::unsupported": 0.03,
+        "destination_bank::wrong_role": 0.03,
+        "destination_bank::superseded": 0.02
+      }
+    },
+    {
+      "case_id": "C030",
+      "field": "source_account_kind",
+      "permitted_alias_only": true,
+      "max_error_probability": 0.03,
+      "checks": {
+        "source_account_kind::unsupported": 0.03,
+        "source_account_kind::wrong_role": 0.03,
+        "source_account_kind::superseded": 0.02
+      }
+    },
+    {
+      "case_id": "C033",
+      "field": "destination_bank",
+      "permitted_alias_only": true,
+      "max_error_probability": 0.04,
+      "checks": {
+        "destination_bank::unsupported": 0.04,
+        "destination_bank::wrong_role": 0.03,
+        "destination_bank::superseded": 0.02
+      }
+    }
+  ],
+  "before": {
+    "strict_metrics": {
+      "total_cases": 13,
+      "predicted_cases": 13,
+      "missing_predictions": [],
+      "document_type_correct": 13,
+      "document_type_accuracy": 1.0,
+      "document_type_mismatches": [],
+      "fields": {
+        "true_positives": 48,
+        "false_positives": 1,
+        "false_negatives": 1,
+        "precision": 0.9795918367346939,
+        "recall": 0.9795918367346939,
+        "value_accuracy": 0.9166666666666666,
+        "alias_aware_value_accuracy": 0.9791666666666666,
+        "evidence_accuracy": 0.9791666666666666,
+        "unsupported_fill_rate": 0.02040816326530612
+      },
+      "by_document_type": {
+        "invoice_draft": {
+          "true_positives": 35,
+          "false_positives": 1,
+          "false_negatives": 1,
+          "precision": 0.9722222222222222,
+          "recall": 0.9722222222222222,
+          "value_accuracy": 0.9714285714285714,
+          "alias_aware_value_accuracy": 0.9714285714285714,
+          "evidence_accuracy": 0.9714285714285714,
+          "unsupported_fill_rate": 0.027777777777777776
+        },
+        "transfer_draft": {
+          "true_positives": 13,
+          "false_positives": 0,
+          "false_negatives": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "value_accuracy": 0.7692307692307693,
+          "alias_aware_value_accuracy": 1.0,
+          "evidence_accuracy": 1.0,
+          "unsupported_fill_rate": 0.0
+        }
+      }
+    },
+    "expected_fillable_values": 49,
+    "correct_expected_values": 44,
+    "total_expected_fields": 111,
+    "correct_field_status_values": 105,
+    "expected_item_attributes": 32,
+    "correct_item_attributes": 30,
+    "alias_aware_correct_expected_values": 47
+  },
+  "after": {
+    "strict_metrics": {
+      "total_cases": 13,
+      "predicted_cases": 13,
+      "missing_predictions": [],
+      "document_type_correct": 13,
+      "document_type_accuracy": 1.0,
+      "document_type_mismatches": [],
+      "fields": {
+        "true_positives": 49,
+        "false_positives": 0,
+        "false_negatives": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "value_accuracy": 0.9183673469387755,
+        "alias_aware_value_accuracy": 0.9795918367346939,
+        "evidence_accuracy": 0.9795918367346939,
+        "unsupported_fill_rate": 0.0
+      },
+      "by_document_type": {
+        "invoice_draft": {
+          "true_positives": 36,
+          "false_positives": 0,
+          "false_negatives": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "value_accuracy": 0.9722222222222222,
+          "alias_aware_value_accuracy": 0.9722222222222222,
+          "evidence_accuracy": 0.9722222222222222,
+          "unsupported_fill_rate": 0.0
+        },
+        "transfer_draft": {
+          "true_positives": 13,
+          "false_positives": 0,
+          "false_negatives": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "value_accuracy": 0.7692307692307693,
+          "alias_aware_value_accuracy": 1.0,
+          "evidence_accuracy": 1.0,
+          "unsupported_fill_rate": 0.0
+        }
+      }
+    },
+    "expected_fillable_values": 49,
+    "correct_expected_values": 45,
+    "total_expected_fields": 111,
+    "correct_field_status_values": 107,
+    "expected_item_attributes": 32,
+    "correct_item_attributes": 31,
+    "alias_aware_correct_expected_values": 48
+  },
+  "conclusion": "observed_improvement_not_statistical_proof",
+  "selected_cases": [
+    "C003",
+    "C006",
+    "C009",
+    "C012",
+    "C015",
+    "C018",
+    "C021",
+    "C024",
+    "C027",
+    "C030",
+    "C033",
+    "C036",
+    "C039"
+  ],
+  "not_attempted": [],
+  "llm_model": "deepseek-v4.1-flash",
+  "wrong_threshold": 0.7,
+  "max_attempts": 2,
+  "llm_max_output_tokens": 4096,
+  "llm_temperature": null,
+  "dataset_sha256": "67a0f034d309fbb8e18561c6c79587e990d0b4dd991fd455c86c97096ffa26a3",
+  "labels_sha256": "b65fcd28410a0538f51c717629321bb3a9fe4108b69372d4a4214f7751c03d8b",
+  "seed_trace_sha256": "490d19c392beb802fde024706e9ad662fe78a5e432ed4b090a352884b96e5551",
+  "baseline_origin": "saved_trace",
+  "extraction_prompt_sha256": "be8ac4a5474372a57d0f8845040ad944356ee32a8329d5d651fe58d428daf4ce",
+  "verification_code_sha256": "f77c253f2559f0343f73afb4ffd731299aa9ff151ffe717248e719fbc75cd0d4",
+  "field_rules_sha256": "95f32a18aa26d1ef8501e0206f99c776b3ecd876d8663d59a39f04bba6b6618d",
+  "llm_http_calls": 2,
+  "llm_usage": {
+    "requests": 2,
+    "retries": 0,
+    "rate_limit_errors": 0,
+    "responses": 2,
+    "usage_reports": 2,
+    "input_tokens": 12661,
+    "output_tokens": 1364,
+    "elapsed_seconds": 9.781794555994566,
+    "estimated_cost": null
+  },
+  "jev_api_calls": 13,
+  "jev_models": [
+    "jev-1.13.0"
+  ],
+  "jev_usage": {
+    "input_tokens": 169183,
+    "output_tokens": 6503
+  }
+}

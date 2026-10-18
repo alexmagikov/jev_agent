@@ -1,0 +1,144 @@
+{
+  "method": "paired verification-only: shared LLM classification and identical seed",
+  "primary_target": "exact field status and value; evidence metrics reported separately",
+  "attempted_cases": 13,
+  "complete_pairs": 13,
+  "incomplete_cases": [],
+  "field_changes": {
+    "corrected": 0,
+    "regressed": 0,
+    "details": []
+  },
+  "before": {
+    "strict_metrics": {
+      "total_cases": 13,
+      "predicted_cases": 13,
+      "missing_predictions": [],
+      "document_type_correct": 13,
+      "document_type_accuracy": 1.0,
+      "document_type_mismatches": [],
+      "fields": {
+        "true_positives": 48,
+        "false_positives": 1,
+        "false_negatives": 1,
+        "precision": 0.9795918367346939,
+        "recall": 0.9795918367346939,
+        "value_accuracy": 0.9166666666666666,
+        "evidence_accuracy": 0.9791666666666666,
+        "unsupported_fill_rate": 0.02040816326530612
+      },
+      "by_document_type": {
+        "invoice_draft": {
+          "true_positives": 35,
+          "false_positives": 1,
+          "false_negatives": 1,
+          "precision": 0.9722222222222222,
+          "recall": 0.9722222222222222,
+          "value_accuracy": 0.9714285714285714,
+          "evidence_accuracy": 0.9714285714285714,
+          "unsupported_fill_rate": 0.027777777777777776
+        },
+        "transfer_draft": {
+          "true_positives": 13,
+          "false_positives": 0,
+          "false_negatives": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "value_accuracy": 0.7692307692307693,
+          "evidence_accuracy": 1.0,
+          "unsupported_fill_rate": 0.0
+        }
+      }
+    },
+    "expected_fillable_values": 49,
+    "correct_expected_values": 44
+  },
+  "after": {
+    "strict_metrics": {
+      "total_cases": 13,
+      "predicted_cases": 13,
+      "missing_predictions": [],
+      "document_type_correct": 13,
+      "document_type_accuracy": 1.0,
+      "document_type_mismatches": [],
+      "fields": {
+        "true_positives": 48,
+        "false_positives": 1,
+        "false_negatives": 1,
+        "precision": 0.9795918367346939,
+        "recall": 0.9795918367346939,
+        "value_accuracy": 0.9166666666666666,
+        "evidence_accuracy": 0.9791666666666666,
+        "unsupported_fill_rate": 0.02040816326530612
+      },
+      "by_document_type": {
+        "invoice_draft": {
+          "true_positives": 35,
+          "false_positives": 1,
+          "false_negatives": 1,
+          "precision": 0.9722222222222222,
+          "recall": 0.9722222222222222,
+          "value_accuracy": 0.9714285714285714,
+          "evidence_accuracy": 0.9714285714285714,
+          "unsupported_fill_rate": 0.027777777777777776
+        },
+        "transfer_draft": {
+          "true_positives": 13,
+          "false_positives": 0,
+          "false_negatives": 0,
+          "precision": 1.0,
+          "recall": 1.0,
+          "value_accuracy": 0.7692307692307693,
+          "evidence_accuracy": 1.0,
+          "unsupported_fill_rate": 0.0
+        }
+      }
+    },
+    "expected_fillable_values": 49,
+    "correct_expected_values": 44
+  },
+  "conclusion": "no_observed_advantage",
+  "selected_cases": [
+    "C003",
+    "C006",
+    "C009",
+    "C012",
+    "C015",
+    "C018",
+    "C021",
+    "C024",
+    "C027",
+    "C030",
+    "C033",
+    "C036",
+    "C039"
+  ],
+  "not_attempted": [],
+  "llm_model": "deepseek-v4.1-flash",
+  "wrong_threshold": 0.7,
+  "max_attempts": 2,
+  "llm_max_output_tokens": 4096,
+  "llm_temperature": null,
+  "dataset_sha256": "67a0f034d309fbb8e18561c6c79587e990d0b4dd991fd455c86c97096ffa26a3",
+  "labels_sha256": "b65fcd28410a0538f51c717629321bb3a9fe4108b69372d4a4214f7751c03d8b",
+  "llm_http_calls": 25,
+  "llm_usage": {
+    "requests": 25,
+    "retries": 0,
+    "rate_limit_errors": 0,
+    "responses": 25,
+    "usage_reports": 25,
+    "input_tokens": 75966,
+    "output_tokens": 13209,
+    "elapsed_seconds": 158.94425288696948,
+    "estimated_cost": null
+  },
+  "jev_api_calls": 11,
+  "jev_models": [
+    "jev-1.13.0"
+  ],
+  "jev_usage": {
+    "input_tokens": 133346,
+    "output_tokens": 5177
+  }
+}

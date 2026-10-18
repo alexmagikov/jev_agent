@@ -3,7 +3,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from src.schemas import DocumentType, Probability
+from src.schemas.schemas import DocumentType, Probability
+from src.field_rules import equivalent_field_values
 
 
 type JsonRow = Mapping[str, Any]
@@ -22,6 +23,7 @@ class FieldMetrics(BaseModel):
     precision: float
     recall: float
     value_accuracy: float | None
+    alias_aware_value_accuracy: float | None = None
     evidence_accuracy: float | None
     unsupported_fill_rate: float
 
@@ -63,6 +65,8 @@ def calculate_metrics(
     ``evidence_accuracy`` — равенство множеств идентификаторов сообщений.
     Обе точности считаются только среди true-positive полей. Если таких полей
     нет, значение метрики равно ``None``.
+    ``alias_aware_value_accuracy`` дополнительно учитывает только явно разрешённые
+    варианты банка и типа счёта перевода; строгую метрику она не заменяет.
     """
 
     labels_by_id = _index_rows(labels, source="labels")
@@ -199,6 +203,10 @@ def _field_metrics(
         _evidence(predictions[key]) == _evidence(labels[key])
         for key in true_positive_keys
     )
+    alias_aware_correct_values = sum(
+        equivalent_field_values(key[1], key[2], predictions[key].get("value"), labels[key].get("value"))
+        for key in true_positive_keys
+    )
 
     predicted_positive_count = true_positives + false_positives
     actual_positive_count = true_positives + false_negatives
@@ -211,6 +219,9 @@ def _field_metrics(
         recall=_divide(true_positives, actual_positive_count),
         value_accuracy=(
             correct_values / true_positives if true_positives else None
+        ),
+        alias_aware_value_accuracy=(
+            alias_aware_correct_values / true_positives if true_positives else None
         ),
         evidence_accuracy=(
             correct_evidence / true_positives if true_positives else None

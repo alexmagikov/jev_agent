@@ -3,7 +3,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from src.cases.base import Case
-from src.schemas import Probability, Response, DocumentType, NoneReasonType
+from src.schemas.schemas import Probability, Response, DocumentType, NoneReasonType
 
 
 class DocumentMessage(BaseModel):

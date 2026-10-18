@@ -1,0 +1,63 @@
+"""Pydantic-схемы проекта, сгруппированные по назначению."""
+
+from .document_schemas import (
+    DocumentResult,
+    DocumentSchema,
+    FieldResult,
+    FieldStatus,
+    InvoiceFields,
+    InvoiceItem,
+    InvoiceResult,
+    NoDocumentResult,
+    TransferFields,
+    TransferResult,
+)
+from .extraction_schemas import (
+    Calculation,
+    DocumentClassification,
+    ExtractionProposal,
+    Operand,
+    PreparedFields,
+    ProposedField,
+    ProposedInvoiceItem,
+    SourceQuote,
+    SupportedDocumentType,
+)
+from .schemas import (
+    DataSplit,
+    DocumentType,
+    Message,
+    NoneReasonType,
+    Probability,
+    Response,
+    SplitFilter,
+)
+
+__all__ = [
+    "Calculation",
+    "DataSplit",
+    "DocumentClassification",
+    "DocumentResult",
+    "DocumentSchema",
+    "DocumentType",
+    "ExtractionProposal",
+    "FieldResult",
+    "FieldStatus",
+    "InvoiceFields",
+    "InvoiceItem",
+    "InvoiceResult",
+    "Message",
+    "NoDocumentResult",
+    "NoneReasonType",
+    "Operand",
+    "PreparedFields",
+    "Probability",
+    "ProposedField",
+    "ProposedInvoiceItem",
+    "Response",
+    "SourceQuote",
+    "SplitFilter",
+    "SupportedDocumentType",
+    "TransferFields",
+    "TransferResult",
+]

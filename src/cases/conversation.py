@@ -2,7 +2,7 @@ from pydantic import BaseModel, RootModel
 from typesafe_sdk import Noul, NoulAnswer
 
 from src.cases.base import Case
-from src.schemas import Message, Response
+from src.schemas.schemas import Message, Response
 
 
 class ConversationState(RootModel[list[Message]]):

@@ -4,7 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field, RootModel
 from typesafe_sdk import Noul, NoulAnswer, Score
 
 from src.cases.base import Case
-from src.schemas import Probability, Response
+from src.schemas.schemas import Probability, Response
 
 
 class TicketState(RootModel[str]):
