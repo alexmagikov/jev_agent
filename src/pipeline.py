@@ -10,7 +10,7 @@ from src.cases.document_type import (
     NONE_REASON_TEXT,
     reason_text,
 )
-from src.client import AsyncJev
+from src.client import AsyncJev, JevError, JevRateLimitError
 from src.schemas.schemas import DocumentType, Probability
 from src.schemas.document_schemas import (
     DocumentResult,
@@ -42,7 +42,12 @@ async def classify_document(
     """
 
     case = DocumentTypeCase(state=DocumentTypeState(messages=messages))
-    response = await case.run(client)
+    try:
+        response = await case.run(client)
+    except JevRateLimitError as error:
+        raise PipelineRateLimitError(str(error)) from error
+    except JevError as error:
+        raise PipelineError(str(error)) from error
 
     document_type = response.answers.document_type
     none_reason = response.answers.none_reason
@@ -62,6 +67,15 @@ class PipelineRateLimitError(PipelineError):
     """Пакет нужно остановить, а не отправлять оставшиеся кейсы в ограниченный API."""
 
 
+class PipelineRejectionError(PipelineError):
+    """Попытки исчерпаны; диагностика содержит только внутренние коды, не ответ API."""
+
+    def __init__(self, message: str, *, failure_reason: str, validation_failures: list[dict]):
+        super().__init__(message)
+        self.failure_reason = failure_reason
+        self.validation_failures = validation_failures
+
+
 async def process_document(
     case_id: str,
     messages: list[DocumentMessage],
@@ -74,6 +88,7 @@ async def process_document(
     use_jev: bool = True,
 ) -> DocumentResult:
     """С Jev: классификация -> LLM -> Python -> Jev; без: LLM -> LLM -> Python."""
+
     if not 1 <= max_attempts <= 3 or not 0 < wrong_threshold < 1:
         raise ValueError("Некорректные настройки числа попыток или порога")
     if use_jev and client is None:
@@ -84,7 +99,6 @@ async def process_document(
         raise PipelineError(f"{case_id}: {error}") from error
 
     if use_jev:
-        assert client is not None  # Проверено выше; также сужает тип для анализатора.
         if debug:
             print(f"[{case_id}] Классификация: запрос к Jev…", flush=True)
         decision = await classify_document(messages, client)
@@ -104,6 +118,7 @@ async def process_document(
                 raise PipelineRateLimitError(f"{case_id}: {error}") from error
             except LLMError as error:
                 raise PipelineError(f"{case_id}: {error}") from error
+            
             decision = DocumentTypeDecision(
                 document_type=classification.document_type,
                 confidence=classification.confidence,
@@ -115,6 +130,7 @@ async def process_document(
                 f"{case_id}: классификация не прошла за {max_attempts} попытки: "
                 + "; ".join(classification_feedback)
             )
+        
     return await process_selected_document(
         case_id, messages, decision, client, extractor,
         max_attempts=max_attempts, wrong_threshold=wrong_threshold, debug=debug, use_jev=use_jev,
@@ -158,6 +174,9 @@ async def process_selected_document(
     feedback: list[str] = []
     repair_base: ExtractionProposal | None = None
     repair_fields: list[str] = []
+    validation_failures = []
+    failure_reason = "semantic_rejection"
+
     for attempt in range(1, max_attempts + 1):
         if debug:
             print(f"[{case_id}] Попытка {attempt}/{max_attempts}: извлечение LLM…", flush=True)
@@ -176,12 +195,18 @@ async def process_selected_document(
                     name: proposal.fields[name] if name in repair_fields else field
                     for name, field in repair_base.fields.items()
                 })
+
             if debug:
                 print(f"[{case_id}] Python: проверка источников, форматов и расчётов…", flush=True)
+
             fields = prepare_fields(proposal, messages, decision.document_type)
             if on_candidate is not None:
                 on_candidate(proposal.model_copy(deep=True), fields.model_copy(deep=True))
         except (ExtractionError, LLMResponseError) as error:
+            validation_failures.append({"attempt": attempt,
+                                        "stage": "llm_response" if isinstance(error, LLMResponseError) else "python_validation",
+                                        "code": error.code})
+            failure_reason = "invalid_extraction"
             feedback = [str(error)]
             if debug:
                 print(f"[{case_id}] Замечания LLM/Python: {feedback[0]}", flush=True)
@@ -190,17 +215,27 @@ async def process_selected_document(
             raise PipelineRateLimitError(f"{case_id}: {error}") from error
         except LLMError as error:
             raise PipelineError(f"{case_id}: {error}") from error
+        
         feedback = []
+        failure_reason = "semantic_rejection"
         if use_jev:
             assert client is not None
             try:
                 if debug:
                     print(f"[{case_id}] Jev: проверка полей…", flush=True)
+
                 feedback = await verify_fields(
-                    messages, decision.document_type, proposal, fields, client, wrong_threshold,
+                    messages, 
+                    decision.document_type,
+                    proposal,
+                    fields,
+                    client,
+                    wrong_threshold,
                     debug=debug,
                 )
-            except VerificationError as error:
+            except JevRateLimitError as error:
+                raise PipelineRateLimitError(f"{case_id}: {error}") from error
+            except (VerificationError, JevError) as error:
                 raise PipelineError(f"{case_id}: {error}") from error
 
             if debug:
@@ -209,16 +244,21 @@ async def process_selected_document(
                     print("  " + remark, flush=True)
                 if not feedback:
                     print("  нет", flush=True)
+
         if not feedback:
             result_model = InvoiceResult if decision.document_type == "invoice_draft" else TransferResult
             return result_model(
                 case_id=case_id, document_type=decision.document_type,
                 confidence=decision.confidence, fields=fields,
             )
+        
         repair_fields = sorted({remark.split("::", 1)[0].split("[", 1)[0] for remark in feedback})
         if not set(repair_fields) <= set(proposal.fields):
             raise PipelineError(f"{case_id}: проверка вернула неизвестное поле для исправления")
         repair_base = proposal.model_copy(deep=True)
 
     summary = "; ".join(feedback)
-    raise PipelineError(f"{case_id}: проверки не пройдены за {max_attempts} попытки: {summary}")
+    raise PipelineRejectionError(
+        f"{case_id}: проверки не пройдены за {max_attempts} попытки: {summary}",
+        failure_reason=failure_reason, validation_failures=validation_failures,
+    )
