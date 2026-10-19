@@ -7,7 +7,10 @@ from pydantic import BaseModel, RootModel
 from src.cases.document_type import DocumentMessage
 from src.client import AsyncJev
 from src.extraction import ExtractionProposal, PreparedFields, SupportedDocumentType, get_template
-from src.field_rules import INVOICE_AMOUNT_RULE, INVOICE_SUBJECT_RULE, ITEM_UNIT_RULE, TRANSFER_ALIAS_RULES
+from src.field_rules import (
+    INVOICE_AMOUNT_RULE, INVOICE_SUBJECT_RULE, ITEM_DESCRIPTION_RULE, ITEM_QUANTITY_RULE,
+    ITEM_UNIT_PRICE_RULE, ITEM_UNIT_RULE, TRANSFER_ALIAS_RULES,
+)
 from src.schemas.schemas import Probability
 
 
@@ -39,6 +42,7 @@ class VerificationState(BaseModel):
 class VerificationQuestions(RootModel[dict[str, NoulQuestion]]):
     pass
 
+
 _RULES = (
     """Estimate the probability of the error described in the question for the specified field in checked_fields.
     Evaluate the field according to its meaning in template and the entire dialogue in messages.
@@ -61,31 +65,40 @@ _RULES = (
 _ITEMS_RULES = (
     "Subject and items are not mutually exclusive: the same explicitly named billed goods "
     "or service may support both subject and an item's description. "
-    "Judge item existence separately from the completeness of its attributes. "
+    "Check whether an item exists separately from whether its attributes are complete. "
+    "If the user explicitly names goods or a service to be billed, items must include that item "
+    "and have status=fillable. Unknown quantity, unit or unit_price_rub must remain null; "
+    "their absence is not a reason to reject the item. "
+    "Flag as errors: omitting explicitly named billed goods or services; filling an attribute "
+    "without support from the dialogue or a permitted calculation; leaving an attribute null "
+    "when it is explicitly supplied or unambiguously computable under the rules below. "
+    "For 'Выставь счёт за консультацию', an item with description='консультация', "
+    "quantity=null, unit=null and unit_price_rub=null is correct. "
     "Do not concatenate several different named items to invent an unstated subject. "
-    "Normalize ordinary item descriptions to nominative case when unambiguous, without "
-    "changing meaning, characteristics or names in quotation marks. "
+    + ITEM_DESCRIPTION_RULE + " "
     "An item with only a supported description is fillable when the billed goods or service "
     "are unambiguously named. Fill each attribute only when supported by user messages or an unambiguous "
     "calculation from their data; leave all other attributes null. Missing quantity, unit or unit_price_rub "
     "does not make the entire items field missing or ambiguous. "
-    "As a convention for this task, treat a single line item as having one unit price. Its total and "
-    "positive quantity support unit_price_rub as total/count when both belong to that same line item "
-    "and the dialogue does not indicate different unit prices within it. Quantity may be explicitly "
-    "stated or unambiguously calculated from user data. No explicit statement of equal prices is required. "
-    "A directly stated unit price needs no calculation. Do not divide a combined total "
-    "for several different goods by their combined quantity to invent their individual prices. "
-    "Preserve separately priced items; if their allocation is unknown, null unit prices are correct. "
+    + ITEM_QUANTITY_RULE + " " + ITEM_UNIT_PRICE_RULE + " "
     "Do not create an item from only a total amount, a recipient name or a contract reference. "
     "If no billed goods or service are named and no other item details are supplied, items is missing. "
     "For 'Счёт на 5000 рублей', amount_rub is 5000 and items is missing. "
     "For 'Счёт за консультационные услуги на 5000 рублей', items is fillable with description "
-    "'консультационные услуги' and null quantity, unit and unit_price_rub; amount_rub is 5000 "
+    "'консультационная услуга' and null quantity, unit and unit_price_rub; amount_rub is 5000 "
     "and subject may be 'консультационные услуги'. For 'Абрикосы: 100 рублей за 5 штук', "
     "one line item has total=100 and quantity=5, supporting a unit price calculation of 100/5. "
     "For 'Стулья: по 3 штуки для каждого из 4 кабинетов, всего 12000 рублей', quantity is 3*4 "
     "and unit price is 12000/(3*4); both formulas must use the original source numbers. "
-    "For 'Яблоки и груши: всего 5 штук на 100 рублей', do not invent each good's quantity or unit price. "
+    "For 'Яблоки и груши: всего 5 штук на 100 рублей', the expected result is "
+    "amount_rub.status=fillable, amount_rub.value=100, and items.status=fillable with two items: "
+    "{description: 'яблоко', quantity: null, unit: 'штук', unit_price_rub: null} and "
+    "{description: 'груша', quantity: null, unit: 'штук', unit_price_rub: null}. "
+    "The stated unit applies to both goods, but the combined quantity 5 does not determine "
+    "either item's quantity. Do not split it equally, assign 5 to each item, or use 100/5 "
+    "as either item's unit price. No quantity or unit-price calculation is justified; "
+    "quantity_calculation and unit_price_calculation must be null for both items. "
+    "subject.status=missing and subject.value=null because no common invoice purpose is stated. "
     "These examples do not supply real case values. "
 )
 
@@ -110,6 +123,7 @@ _FIELD_RULES = {
 
 def _build_verification_checks(fields: PreparedFields) -> dict[str, str]:
     """Конкретные вопросы проверок без общих правил Jev."""
+
     questions = {}
     for name, field in fields.model_dump(mode="json").items():
         path = f"`checked_fields.{name}`"
@@ -119,6 +133,7 @@ def _build_verification_checks(fields: PreparedFields) -> dict[str, str]:
                 "wrong_role": f"Does {path} refer to the wrong person, item, bank, document or numerical role?",
                 "superseded": f"Was {path}'s value replaced or withdrawn by a later explicit user correction?",
             }
+
             if name == "amount_rub" and "items" in type(fields).model_fields:
                 checks["ambiguous"] = (
                     f"Does {path} incorrectly claim a definite invoice total when the dialogue "
@@ -167,26 +182,56 @@ def _build_verification_checks(fields: PreparedFields) -> dict[str, str]:
                     "only a recipient, amount, contract, or several different goods without "
                     "a stated common purpose are supplied."
                 )
+            if name == "amount_rub" and field["status"] == "missing" and "items" in type(fields).model_fields:
+                checks["status_wrong"] = (
+                    f"Is {path} wrongly left missing although an invoice total is explicitly "
+                    "stated or an unambiguous sum of all active billed line charges can be "
+                    "computed from the user's messages? Check each named line and the role "
+                    "of its price. An explicitly assigned charge per named line can support "
+                    "the sum even with unknown quantity within that line; a mere unit price "
+                    "with unknown quantity cannot, except for the explicit finite named-goods "
+                    "enumeration convention in the shared rule above. Apply that convention "
+                    "to a price stated for each named good; do not require invented quantity=1. "
+                    "A computed total need not appear verbatim "
+                    "in the source. Do not flag if the total requires invented quantities "
+                    "or leaves the scope of a charge unresolved."
+                )
+
         for check, question in checks.items():
             questions[f"{name}::{check}"] = question
         if name == "items" and field["status"] == "fillable":
             for index, item in enumerate(field["value"]):
                 for attribute, value in item.items():
-                    if value is None:
-                        continue
                     path = f"`checked_fields.items.value[{index}].{attribute}`"
+                    if value is None:
+                        questions[f"items[{index}].{attribute}::missing_supported"] = (
+                            f"Is {path} wrongly left null although user messages unambiguously "
+                            "supply this attribute or support its calculation for this single line item? "
+                            "Check the attribute's numerical role and association with this item, "
+                            "including later corrections. If the attribute is not uniquely supported, "
+                            "null is correct. Do not fill it merely because other attributes are known."
+                        )
+                        continue
                     questions[f"items[{index}].{attribute}::value_wrong"] = (
-                        f"Is {path} incorrect for this specific line item? "
+                        f"Is {path} incorrect for this single line item? "
                         "Check this attribute individually: its meaning, association with this item, "
                         "latest user correction, and the required description normalization. "
                         "Correct attributes of the same or other items do not justify an incorrect one. "
                         "For a calculated number, judge the source operands and operation, not verbatim result membership."
                     )
+                    if attribute == "description":
+                        questions[f"items[{index}].{attribute}::value_wrong"] += (
+                            " Check the required singular nominative form; preserve quoted names "
+                            "and plural-only nouns."
+                        )
     return questions
 
 
 def build_verification_questions(fields: PreparedFields) -> VerificationQuestions:
     questions = {}
+    attribute_rules = {"description": ITEM_DESCRIPTION_RULE, "quantity": ITEM_QUANTITY_RULE,
+                       "unit": ITEM_UNIT_RULE, "unit_price_rub": ITEM_UNIT_PRICE_RULE}
+    
     for key, question in _build_verification_checks(fields).items():
         name = key.split("::", 1)[0].split("[", 1)[0]
         item_rules = _ITEMS_RULES if name == "items" else ""
@@ -194,6 +239,10 @@ def build_verification_questions(fields: PreparedFields) -> VerificationQuestion
         if "items" in type(fields).model_fields:
             semantic_rule = {"amount_rub": INVOICE_AMOUNT_RULE,
                              "subject": INVOICE_SUBJECT_RULE, "items": ITEM_UNIT_RULE}.get(name, "")
+        if key.startswith("items["):
+            attribute = key.split("::", 1)[0].rsplit(".", 1)[-1]
+            item_rules = attribute_rules[attribute]
+            semantic_rule = ""
         instructions = "\n\n".join(part for part in
                                   (_RULES, _FIELD_RULES.get(name), item_rules, semantic_rule, question) if part)
         questions[key] = NoulQuestion(instructions=instructions)
