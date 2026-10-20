@@ -8,30 +8,30 @@ from datetime import date
 from decimal import Decimal, DecimalException, localcontext
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
 
-from pydantic import BaseModel, Field, ValidationError, create_model
+from pydantic import BaseModel, ValidationError
 
 from src.cases.document_type import DocumentMessage
 from src.schemas.document_schemas import (
-    DocumentSchema,
-    FieldStatus,
     InvoiceFields,
-    InvoiceItem,
-    Number,
     TransferFields,
 )
 from src.schemas.extraction_schemas import (
     Calculation,
     ExtractionProposal,
-    Operand,
     PreparedFields,
-    ProposedField,
-    ProposedInvoiceItem,
     SourceQuote,
     SupportedDocumentType,
-    ExtractionError
+    ExtractionError,
+    InvoiceExtractionProposal,
+    TransferExtractionProposal
 )
+
+
+PROPOSAL_MODELS = {
+    "invoice_draft": InvoiceExtractionProposal,
+    "transfer_draft": TransferExtractionProposal
+}
 
 
 @lru_cache(maxsize=2)
@@ -41,31 +41,20 @@ def get_proposal_model(document_type: SupportedDocumentType) -> type[BaseModel]:
     Отдельная модель нужна только на границе с LLM. Дальше пайплайн по-прежнему
     работает с ExtractionProposal и словарём fields; формат результата не меняется.
     """
-    result_model = InvoiceFields if document_type == "invoice_draft" else TransferFields
-    prefix = "Invoice" if document_type == "invoice_draft" else "Transfer"
-    field_models = {}
-    fields = {}
-    for name, field in result_model.model_fields.items():
-        value_type = field.annotation.model_fields["value"].annotation
-        if name == "items":
-            value_type = list[ProposedInvoiceItem] | None
-        calculable = name == "amount_rub"
-        key = (value_type, calculable)
-        if key not in field_models:
-            field_models[key] = create_model(
-                prefix + name.title().replace("_", "") + "Proposal",
-                __base__=ProposedField,
-                value=(value_type, ...),
-                calculation=(Calculation | None if calculable else type(None), None),
-            )
-        fields[name] = (field_models[key], ...)
-    fields_model = create_model(prefix + "ProposedFields", __base__=DocumentSchema, **fields)
-    return create_model(prefix + "ExtractionProposal", __base__=DocumentSchema, fields=(fields_model, ...))
+
+    return PROPOSAL_MODELS[document_type]
 
 
-def get_proposal_schema(document_type: SupportedDocumentType) -> dict:
+def get_proposal_schema(document_type: SupportedDocumentType, *, field_names: list[str] | None = None) -> dict:
     """Закрытая JSON Schema; nullable-ключи тоже явно обязательны для strict-режима."""
     schema = get_proposal_model(document_type).model_json_schema()
+    if field_names is not None:
+        # При ремонте сервер должен генерировать только отмеченные поля.
+        # model_json_schema() возвращает новый словарь: полная схема не изменяется.
+        fields_schema = schema["$defs"][schema["properties"]["fields"]["$ref"].split("/")[-1]]
+        if not field_names or not set(field_names) <= set(fields_schema["properties"]):
+            raise ValueError("Для ремонта нужны существующие поля текущего шаблона")
+        fields_schema["properties"] = {name: fields_schema["properties"][name] for name in field_names}
 
     def require_properties(node):
         if isinstance(node, dict):
@@ -108,9 +97,9 @@ def message_index(messages: list[DocumentMessage]) -> dict[str, DocumentMessage]
 def _check_source(source: SourceQuote, indexed: dict[str, DocumentMessage]) -> None:
     message = indexed.get(source.message_id)
     if message is None or message.role != "user":
-        raise ExtractionError("Источник должен ссылаться на существующую реплику user")
+        raise ExtractionError("Источник должен ссылаться на существующую реплику user", code="invalid_source")
     if not source.quote.strip() or source.quote not in message.text:
-        raise ExtractionError("Цитата источника отсутствует в указанной реплике")
+        raise ExtractionError("Цитата источника отсутствует в указанной реплике", code="invalid_source")
 
 
 _NUMBER = r"[+-]?(?:\d{1,3}(?:[ \u00a0\u202f]\d{3})+|\d+)(?:[.,]\d+)?"
@@ -123,10 +112,10 @@ _RUB_KOP = re.compile(
 
 def _decimal(text: str) -> Decimal:
     if len(text) > 120 or re.fullmatch(_NUMBER, text.strip()) is None:
-        raise ExtractionError("Операнд должен быть точным числовым фрагментом, без единиц")
+        raise ExtractionError("Операнд должен быть точным числовым фрагментом, без единиц", code="invalid_operand")
     value = Decimal(re.sub(r"[\s\u00a0\u202f]", "", text).replace(",", "."))
     if not value.is_finite() or abs(value) > Decimal("1e30"):
-        raise ExtractionError("Число выходит за допустимый диапазон")
+        raise ExtractionError("Число выходит за допустимый диапазон", code="invalid_operand")
     return value
 
 
@@ -139,7 +128,9 @@ def _numbers_in(quotes: list[str]) -> set[Decimal]:
             except ExtractionError:
                 continue
         for match in _RUB_KOP.finditer(quote):
-            numbers.add(_decimal(match[1]) + Decimal(match[2]) / 100)
+            rubles = _decimal(match[1])
+            amount = abs(rubles) + Decimal(match[2]) / 100
+            numbers.add(-amount if rubles.is_signed() else amount)
     return numbers
 
 
@@ -152,14 +143,14 @@ def _calculate(plan: Calculation, indexed: dict[str, DocumentMessage], target: s
             match.group() == operand.source.quote.strip()
             for match in _NUMBERS.finditer(indexed[operand.source.message_id].text)
         ):
-            raise ExtractionError("Операнд должен быть целым числовым фрагментом, а не частью числа")
+            raise ExtractionError("Операнд должен быть целым числовым фрагментом, а не частью числа", code="invalid_operand")
         if operand.name in values:
-            raise ExtractionError("Повторяющееся имя операнда")
+            raise ExtractionError("Повторяющееся имя операнда", code="invalid_calculation")
         values[operand.name] = _decimal(operand.source.quote)
     try:
         tree = ast.parse(plan.expression, mode="eval")
         if len(list(ast.walk(tree))) > 64:
-            raise ExtractionError("Слишком сложная формула")
+            raise ExtractionError("Слишком сложная формула", code="invalid_calculation")
         used: set[str] = set()
 
         def evaluate(node: ast.AST) -> Decimal:
@@ -181,18 +172,18 @@ def _calculate(plan: Calculation, indexed: dict[str, DocumentMessage], target: s
                     return left * right
                 if isinstance(node.op, ast.Div):
                     return left / right
-            raise ExtractionError("В формуле разрешены только операнды, +, -, *, / и скобки")
+            raise ExtractionError("В формуле разрешены только операнды, +, -, *, / и скобки", code="invalid_calculation")
 
         with localcontext() as context:
             context.prec = 40
             value = evaluate(tree.body)
         if used != set(values):
-            raise ExtractionError("Все объявленные операнды должны использоваться в формуле")
+            raise ExtractionError("Все объявленные операнды должны использоваться в формуле", code="invalid_calculation")
         numeric = float(value)
         if not math.isfinite(numeric) or Decimal(str(numeric)) != value:
-            raise ExtractionError("Результат нельзя точно представить в JSON; правило округления не задано")
+            raise ExtractionError("Результат нельзя точно представить в JSON; правило округления не задано", code="invalid_calculation")
     except (SyntaxError, DecimalException, OverflowError, RecursionError) as error:
-        raise ExtractionError("Некорректная арифметическая формула") from error
+        raise ExtractionError("Некорректная арифметическая формула", code="invalid_calculation") from error
     operands = ", ".join(f"{name}={value}" for name, value in values.items())
     return numeric, f"{target} = {plan.expression}; {operands}; result={value}"
 
@@ -253,7 +244,7 @@ def prepare_fields(
         if field.status != "fillable" and field.value is not None:
             raise ExtractionError(f"{name}: незаполняемое поле должно иметь value=null")
         if field.status in ("fillable", "invalid", "ambiguous") and not field.evidence:
-            raise ExtractionError(f"{name}: для значения или проблемы нужны источники")
+            raise ExtractionError(f"{name}: для значения или проблемы нужны источники", code="missing_evidence")
         
         checked_field = {
             "status": field.status,
@@ -270,7 +261,7 @@ def prepare_fields(
             if field.status != "fillable":
                 raise ExtractionError("Нельзя вычислять незаполняемое поле")
             if field.value is not None:
-                raise ExtractionError(f"{name}: при calculation значение должно быть null")
+                raise ExtractionError(f"{name}: при calculation значение должно быть null", code="conflicting_calculation_value")
             
             checked_field["value"] = apply_calculation(field.calculation, name, checked_field)
 
@@ -284,7 +275,7 @@ def prepare_fields(
                         continue
                     target = f"items[{index}].{key}"
                     if getattr(item, key) is not None:
-                        raise ExtractionError(f"{target}: при расчёте значение должно быть null")
+                        raise ExtractionError(f"{target}: при расчёте значение должно быть null", code="conflicting_calculation_value")
                     checked_field["value"][index][key] = apply_calculation(plan, target, checked_field)
         fields[name] = checked_field
 
@@ -300,7 +291,7 @@ def prepare_fields(
         quotes = [source.quote for source in proposal.fields[name].evidence]
 
         if value is None:
-            raise ExtractionError(f"{name}: у заполняемого поля нет значения или расчёта")
+            raise ExtractionError(f"{name}: у заполняемого поля нет значения или расчёта", code="missing_value")
         if name in exact_fields and (not isinstance(value, str) or not any(value in q for q in quotes)):
             raise ExtractionError(f"{name}: реквизит должен дословно присутствовать в источнике")
         
@@ -312,7 +303,7 @@ def prepare_fields(
 
         if name in ("amount_rub", "vat_rate_percent") and name not in calculated:
             if not isinstance(value, (int, float)) or Decimal(str(value)) not in numbers:
-                raise ExtractionError(f"{name}: число не подтверждено источником или формулой")
+                raise ExtractionError(f"{name}: число не подтверждено источником или формулой", code="unsupported_numeric_value")
             
         if name == "items":
             if not isinstance(value, list) or not value:

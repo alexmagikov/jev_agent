@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, RootModel
+from pydantic import BaseModel, JsonValue, RootModel
 
 from src.cases.document_type import DocumentMessage
 from src.client import AsyncJev
@@ -20,7 +20,8 @@ class VerificationError(RuntimeError):
 
 class NoulQuestion(BaseModel):
     type: Literal["noul"] = "noul"
-    instructions: str
+    instructions: dict[str, JsonValue]
+    criteria: dict[Literal["true", "false"], str]
 
 
 class NoulAnswer(BaseModel):
@@ -34,9 +35,7 @@ class VerificationResponse(BaseModel):
 class VerificationState(BaseModel):
     messages: list[DocumentMessage]
     document_type: SupportedDocumentType
-    template: dict
-    proposal: ExtractionProposal
-    checked_fields: PreparedFields
+    rules: str
 
 
 class VerificationQuestions(RootModel[dict[str, NoulQuestion]]):
@@ -44,8 +43,8 @@ class VerificationQuestions(RootModel[dict[str, NoulQuestion]]):
 
 
 _RULES = (
-    """Estimate the probability of the error described in the question for the specified field in checked_fields.
-    Evaluate the field according to its meaning in template and the entire dialogue in messages.
+    """Estimate the probability of the error described in each question's criteria.true.
+    Evaluate instructions.field using its meaning, cited evidence and the entire dialogue in messages.
     Use only information provided by the user. Assistant messages may clarify what a user’s reply
     refers to, but cannot independently support a value.
     A later explicit correction supersedes the previous value.
@@ -126,7 +125,7 @@ def _build_verification_checks(fields: PreparedFields) -> dict[str, str]:
 
     questions = {}
     for name, field in fields.model_dump(mode="json").items():
-        path = f"`checked_fields.{name}`"
+        path = f"`{name}`"
         if field["status"] == "fillable":
             checks = {
                 "unsupported": f"Is the value of {path} unsupported by its cited user messages?",
@@ -148,16 +147,16 @@ def _build_verification_checks(fields: PreparedFields) -> dict[str, str]:
                 )
             if name == "items":
                 checks["incomplete"] = (
-                    "Does `checked_fields.items` omit an active item or explicitly supplied part of an item? "
+                    "Does `items` omit an active item or explicitly supplied part of an item? "
                     "Only flag parts supplied by the user or unambiguously computable from their data; "
                     "unknown attributes correctly left null are not omissions."
                 )
             if field["derivation"]:
                 calculation_location = (
                     "Check `quantity_calculation` and `unit_price_calculation` inside each item "
-                    "of `proposal.fields.items.value`."
+                    "in instructions.field.item_calculations."
                     if name == "items"
-                    else f"Check `proposal.fields.{name}.calculation`."
+                    else "Check instructions.field.calculation."
                 )
                 checks["formula_wrong"] = (
                     f"Does the calculation for {path} misinterpret quantities, unit prices, totals, "
@@ -202,7 +201,7 @@ def _build_verification_checks(fields: PreparedFields) -> dict[str, str]:
         if name == "items" and field["status"] == "fillable":
             for index, item in enumerate(field["value"]):
                 for attribute, value in item.items():
-                    path = f"`checked_fields.items.value[{index}].{attribute}`"
+                    path = f"`items[{index}].{attribute}`"
                     if value is None:
                         questions[f"items[{index}].{attribute}::missing_supported"] = (
                             f"Is {path} wrongly left null although user messages unambiguously "
@@ -215,10 +214,14 @@ def _build_verification_checks(fields: PreparedFields) -> dict[str, str]:
                     questions[f"items[{index}].{attribute}::value_wrong"] = (
                         f"Is {path} incorrect for this single line item? "
                         "Check this attribute individually: its meaning, association with this item, "
-                        "latest user correction, and the required description normalization. "
-                        "Correct attributes of the same or other items do not justify an incorrect one. "
-                        "For a calculated number, judge the source operands and operation, not verbatim result membership."
+                        "latest user correction, and source support. "
+                        "Correct attributes of the same or other items do not justify an incorrect one."
                     )
+                    if attribute in ("quantity", "unit_price_rub"):
+                        questions[f"items[{index}].{attribute}::value_wrong"] += (
+                            " For a calculated number, judge the source operands and operation, "
+                            "not verbatim result membership."
+                        )
                     if attribute == "description":
                         questions[f"items[{index}].{attribute}::value_wrong"] += (
                             " Check the required singular nominative form; preserve quoted names "
@@ -227,10 +230,21 @@ def _build_verification_checks(fields: PreparedFields) -> dict[str, str]:
     return questions
 
 
-def build_verification_questions(fields: PreparedFields) -> VerificationQuestions:
+def build_verification_questions(
+    fields: PreparedFields, *, proposal: ExtractionProposal | None = None,
+    document_type: SupportedDocumentType | None = None,
+) -> VerificationQuestions:
+    """Для production передаётся proposal: точные цитаты и планы рядом с проверяемым значением."""
     questions = {}
+    document_type = document_type or ("invoice_draft" if "items" in type(fields).model_fields else "transfer_draft")
+    template = get_template(document_type)
+    prepared = fields.model_dump(mode="json")
     attribute_rules = {"description": ITEM_DESCRIPTION_RULE, "quantity": ITEM_QUANTITY_RULE,
                        "unit": ITEM_UNIT_RULE, "unit_price_rub": ITEM_UNIT_PRICE_RULE}
+    attribute_meanings = {"description": "Наименование этой позиции счёта",
+                          "quantity": "Количество товара/услуги в этой позиции счёта",
+                          "unit": "Единица измерения количества этой позиции счёта",
+                          "unit_price_rub": "Цена за одну единицу этой позиции счёта в рублях, не сумма строки"}
     
     for key, question in _build_verification_checks(fields).items():
         name = key.split("::", 1)[0].split("[", 1)[0]
@@ -243,9 +257,39 @@ def build_verification_questions(fields: PreparedFields) -> VerificationQuestion
             attribute = key.split("::", 1)[0].rsplit(".", 1)[-1]
             item_rules = attribute_rules[attribute]
             semantic_rule = ""
-        instructions = "\n\n".join(part for part in
-                                  (_RULES, _FIELD_RULES.get(name), item_rules, semantic_rule, question) if part)
-        questions[key] = NoulQuestion(instructions=instructions)
+        path = key.split("::", 1)[0]
+        current = prepared[name]
+        raw = proposal.fields[name].model_dump(mode="json") if proposal is not None else None
+        claim = {
+            "path": path, "meaning": template["fields"][name],
+            "status": current["status"], "value": current["value"],
+            "evidence": raw["evidence"] if raw is not None else [{"message_id": mid} for mid in current["evidence"]],
+            "calculation": raw["calculation"] if raw is not None else None,
+            "derivation": current["derivation"],
+        }
+        if path.startswith("items["):
+            index = int(path.split("[", 1)[1].split("]", 1)[0])
+            attribute = path.rsplit(".", 1)[1]
+            claim["meaning"] = attribute_meanings[attribute]
+            claim["item"] = current["value"][index]
+            claim["value"] = claim["item"][attribute]
+            calculation_name = {"quantity": "quantity_calculation", "unit_price_rub": "unit_price_calculation"}.get(attribute)
+            claim["calculation"] = raw["value"][index].get(calculation_name) if raw is not None and calculation_name else None
+            # Общая derivation содержит расчёты других позиций; здесь нужен только свой план.
+            claim.pop("derivation")
+        elif name == "items" and raw is not None and isinstance(raw["value"], list):
+            claim["item_calculations"] = [
+                {key: item[key] for key in ("quantity_calculation", "unit_price_calculation")}
+                for item in raw["value"]
+            ]
+        questions[key] = NoulQuestion(
+            instructions={"field": claim, "rules": [part for part in
+                          (_FIELD_RULES.get(name), item_rules, semantic_rule) if part]},
+            criteria={"true": question, "false": (
+                "The specified error is absent. The value/status is supported, including permitted "
+                "normalization and calculations; a null attribute is correct when not uniquely supported."
+            )},
+        )
     return VerificationQuestions(questions)
 
 
@@ -262,14 +306,12 @@ async def verify_fields(
     if not 0 < wrong_threshold < 1:
         raise ValueError("Порог проверки должен находиться между 0 и 1")
 
-    questions = build_verification_questions(fields)
+    questions = build_verification_questions(fields, proposal=proposal, document_type=document_type)
     response = await client.ainvoke(
         state=VerificationState(
             messages=messages,
             document_type=document_type,
-            proposal=proposal,
-            checked_fields=fields,
-            template=get_template(document_type),
+            rules=_RULES,
         ),
         questions=questions,
         response_model=VerificationResponse,

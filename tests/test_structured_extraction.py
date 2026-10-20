@@ -163,7 +163,7 @@ def test_prompt_contains_valid_example_without_invented_quantity():
     example = EXTRACTION_PROMPT.split("<example_output>")[1].split("</example_output>")[0]
     data = json.loads(example)
     # Фрагмент поясняет вложенность, а не заменяет полный шаблон.
-    from src.extraction import ProposedField
+    from src.schemas.extraction_schemas import ProposedField
     items = ProposedField.model_validate(data["fields"]["items"])
     assert items.value[0].quantity is None
     assert items.value[0].unit_price_rub is None

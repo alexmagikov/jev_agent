@@ -51,7 +51,7 @@ def c001_proposal():
         "recipient_inn": ("7701234567", "ИНН 7701234567"),
         "subject": ("консультационные услуги", "консультационные услуги"),
         "items": ([{
-            "description": "консультационные услуги", "quantity": None, "unit": None,
+            "description": "консультационная услуга", "quantity": None, "unit": None,
             "unit_price_rub": None, "quantity_calculation": None, "unit_price_calculation": None,
         }], "консультационные услуги"),
         "amount_rub": (5000, "5000 рублей"),
@@ -84,10 +84,9 @@ async def main(export_dir=None):
     messages = [DocumentMessage.model_validate(message) for message in c001["messages"]]
     proposal = c001_proposal()
     checked = prepare_fields(proposal, messages, "invoice_draft")
-    questions = build_verification_questions(checked)
+    questions = build_verification_questions(checked, proposal=proposal, document_type="invoice_draft")
     state = VerificationState(
-        messages=messages, document_type="invoice_draft", template=get_template("invoice_draft"),
-        proposal=proposal, checked_fields=checked,
+        messages=messages, document_type="invoice_draft", rules=_RULES,
     )
     classification = DocumentTypeCase(state=DocumentTypeState(messages=messages))
     examples = {
@@ -110,10 +109,10 @@ async def main(export_dir=None):
 
     def respond(request):
         captured.append(request.content)
-        kind = json.loads(json.loads(request.content)["messages"][1]["content"])["document_type"]
+        request_user = json.loads(json.loads(request.content)["messages"][1]["content"])
         # Это заглушка только для завершения локального extract(), не предсказание.
         body = {"fields": {name: {"status": "missing", "value": None, "evidence": [], "calculation": None}
-                           for name in get_template(kind)["fields"]}}
+                           for name in request_user["template"]["fields"]}}
         return httpx2.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": dump(body)}}]})
 
     settings = LLMSettings(
@@ -157,6 +156,14 @@ async def main(export_dir=None):
         if filename == "07-llm-retry-jev.request.json":
             assert retry_user.pop("previous_proposal") == proposal.model_dump(mode="json")
             assert retry_user.pop("repair_fields") == ["items"]
+            assert retry_user["template"]["fields"] == {"items": user["template"]["fields"]["items"]}
+            repair_schema = retry_user["output_schema"]
+            repair_fields_schema = repair_schema["$defs"][repair_schema["properties"]["fields"]["$ref"].split("/")[-1]]
+            assert set(repair_fields_schema["properties"]) == set(repair_fields_schema["required"]) == {"items"}
+            assert retry["response_format"]["json_schema"]["schema"] == repair_schema
+            # Остальной контекст тот же; схема и смысл полей намеренно сужены до ремонта.
+            retry_user["template"] = user["template"]
+            retry_user["output_schema"] = user["output_schema"]
         assert retry_user == {k: v for k, v in user.items() if k != "feedback"}
     question_counts = Counter(name.split("::")[1] for name in questions.root)
     counts = Counter((case["split"], types[case["case_id"]]) for case in cases)
@@ -168,6 +175,7 @@ async def main(export_dir=None):
                     for (split, kind), count in sorted(counts.items())],
         "system_prompt": size(EXTRACTION_PROMPT),
         "c001": {
+            "repair_output_fields": ["items"],
             "user_content": size(llm["messages"][1]["content"]),
             "system_plus_user_content": size("".join(m["content"] for m in llm["messages"])),
             "user_components": {key: size(dump(value)) for key, value in user.items()},
@@ -177,10 +185,10 @@ async def main(export_dir=None):
             "verification_questions": size(dump(questions.model_dump(mode="json"))),
             "verification_question_count": len(questions.root),
             "verification_question_kinds": dict(question_counts),
-            "base_rules_per_question": size(_RULES),
-            "base_rules_total_characters": len(_RULES) * len(questions.root),
+            "base_rules_in_state": size(_RULES),
+            "base_rules_total_characters": len(_RULES),
             "item_rules_per_question": size(_ITEMS_RULES),
-            "item_rules_copies": sum(_ITEMS_RULES in question.instructions for question in questions.root.values()),
+            "item_rules_copies": sum(_ITEMS_RULES in question.instructions["rules"] for question in questions.root.values()),
             "python_feedback": size(dump(python_feedback)),
             "jev_feedback": size(dump(jev_feedback)),
         },

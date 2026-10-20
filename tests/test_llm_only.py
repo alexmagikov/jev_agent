@@ -34,6 +34,13 @@ def proposal(document_type="invoice_draft"):
     return {"fields": fields}
 
 
+def invoice_label(case_id="C1"):
+    return {"case_id": case_id, "document_type": "invoice_draft", "fields": {
+        name: {"status": "missing", "value": None, "evidence": [], "derivation": None}
+        for name in InvoiceFields.model_fields
+    }}
+
+
 def classification(document_type="invoice_draft", none_reason=None):
     return {"document_type": document_type, "confidence": 0.8, "none_reason": none_reason}
 
@@ -190,7 +197,7 @@ def test_llm_only_cli_needs_no_jev_key_and_keeps_metrics_and_usage(monkeypatch, 
     monkeypatch.setattr(runner, "DEFAULT_LLM_ONLY_OUTPUT_PATH", output_path)
     input_path.write_text(json.dumps({"case_id": "C1", "split": "dev",
                                      "messages": [message.model_dump() for message in messages()]}))
-    labels_path.write_text(json.dumps({"case_id": "C1", "document_type": "invoice_draft", "fields": {}}))
+    labels_path.write_text(json.dumps(invoice_label()))
     monkeypatch.setattr(runner, "LLMSettings", lambda: settings())
     monkeypatch.setattr(runner, "PipelineSettings", lambda: PipelineSettings(_env_file=None))
     replies = [classification(), proposal()]
@@ -224,9 +231,7 @@ def test_llm_only_continues_after_failed_classification_and_counts_errors(monkey
     input_path.write_text("\n".join(json.dumps({
         "case_id": case_id, "split": "dev", "messages": [message.model_dump() for message in messages()],
     }) for case_id in ("C1", "C2")))
-    labels_path.write_text("\n".join(json.dumps({
-        "case_id": case_id, "document_type": "invoice_draft", "fields": {},
-    }) for case_id in ("C1", "C2")))
+    labels_path.write_text("\n".join(json.dumps(invoice_label(case_id)) for case_id in ("C1", "C2")))
     monkeypatch.setattr(runner, "LLMSettings", lambda: settings())
     monkeypatch.setattr(runner, "PipelineSettings", lambda: PipelineSettings(_env_file=None))
     replies = [{}, {}, classification(), proposal()]

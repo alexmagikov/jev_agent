@@ -40,15 +40,15 @@ def test_jev_gets_same_item_rules_for_missing_and_filled_items(items_present):
                 if key.startswith("items::")}
     assert relevant
     for question in relevant.values():
-        assert "Subject and items are not mutually exclusive" in question.instructions
-        assert "An item with only a supported description is fillable" in question.instructions
-        assert "Do not create an item from only a total amount, a recipient name or a contract reference" in question.instructions
+        assert "Subject and items are not mutually exclusive" in question.model_dump_json()
+        assert "An item with only a supported description is fillable" in question.model_dump_json()
+        assert "Do not create an item from only a total amount, a recipient name or a contract reference" in question.model_dump_json()
     for key, question in questions.items():
         if key.startswith("subject::"):
-            assert INVOICE_SUBJECT_RULE in question.instructions
-            assert "total/count" not in question.instructions
+            assert INVOICE_SUBJECT_RULE in question.model_dump_json()
+            assert "total/count" not in question.model_dump_json()
     if items_present:
-        assert "Only flag parts supplied by the user" in questions["items::incomplete"].instructions
+        assert "Only flag parts supplied by the user" in questions["items::incomplete"].model_dump_json()
     else:
         assert "items::status_wrong" in questions
 
@@ -58,4 +58,4 @@ def test_item_specific_rules_do_not_bloat_unrelated_or_transfer_questions():
         questions = build_verification_questions(fields(model)).root
         for key, question in questions.items():
             if not key.startswith(("items::", "items[", "subject::")):
-                assert "Subject and items are not mutually exclusive" not in question.instructions
+                assert "Subject and items are not mutually exclusive" not in question.model_dump_json()

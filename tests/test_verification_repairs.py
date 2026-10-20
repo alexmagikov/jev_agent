@@ -41,7 +41,7 @@ class RejectNameOnce:
                 document_type=SimpleNamespace(choice="invoice_draft", confidence=0.9),
                 none_reason=SimpleNamespace(choice="no_request"),
             ))
-        self.verification_calls.append(state)
+        self.verification_calls.append(questions)
         return response_model.model_validate({"answers": {
             key: {"noul": 0.95 if len(self.verification_calls) == 1 and key == "recipient_name::noncanonical" else 0.01}
             for key in questions.root
@@ -64,7 +64,7 @@ def test_jev_repairs_only_flagged_fields_and_rechecks_merged_result():
     assert result.fields.recipient_name.value == "ИП Смирнов"
     assert result.fields.amount_rub.value == 1500
     assert len(client.verification_calls) == 2
-    assert client.verification_calls[1].checked_fields.amount_rub.value == 1500
+    assert client.verification_calls[1].root["amount_rub::unsupported"].instructions["field"]["value"] == 1500
     feedback, repair = calls[1]
     assert repair["repair_fields"] == ["recipient_name"]
     assert repair["previous_proposal"].fields["recipient_name"].value == "ИП Смирнову"
@@ -86,8 +86,8 @@ def test_jev_has_atomic_checks_for_each_known_item_attribute():
     for attribute in ("description", "quantity", "unit_price_rub"):
         key = f"items[0].{attribute}::value_wrong"
         assert key in questions
-        assert f"checked_fields.items.value[0].{attribute}" in questions[key].instructions
-        assert "single line item" in questions[key].instructions
+        assert questions[key].instructions["field"]["path"] == f"items[0].{attribute}"
+        assert "single line item" in questions[key].model_dump_json()
     assert "items[0].unit::value_wrong" not in questions
     assert "items::incomplete" in questions
 
@@ -98,7 +98,7 @@ def test_common_prompt_and_jev_agree_on_canonical_names_and_basis_numbers():
     prepared = prepare_fields(invoice_proposal(), messages(), "invoice_draft")
     questions = build_verification_questions(prepared).root
     assert "recipient_name::noncanonical" in questions
-    assert "nominative" in questions["recipient_name::noncanonical"].instructions
+    assert "nominative" in questions["recipient_name::noncanonical"].model_dump_json()
     assert "subject" in EXTRACTION_PROMPT and "не склеивай" in EXTRACTION_PROMPT
 
 
@@ -130,7 +130,7 @@ def test_atomic_jev_feedback_repairs_a_numeric_role_error_that_python_cannot_det
             self.verification_calls.append(state)
             return response_model.model_validate({"answers": {
                 key: {"noul": 0.99 if key == "items[0].quantity::value_wrong"
-                      and state.checked_fields.items.value[0].quantity == 500 else 0.01}
+                      and questions.root[key].instructions["field"]["value"] == 500 else 0.01}
                 for key in questions.root
             }})
 
@@ -172,8 +172,7 @@ def test_offline_size_report_includes_targeted_repair_and_atomic_checks(capsys):
     stats = json.loads(capsys.readouterr().out)
     assert stats["tokens"] is None
     assert stats["c001"]["verification_question_kinds"]["value_wrong"] > 0
-    sizes = stats["c001"]["request_and_example_sizes"]
-    assert sizes["07-llm-retry-jev.request.json"]["utf8_bytes"] > sizes["02-llm-extraction.request.json"]["utf8_bytes"]
+    assert stats["c001"]["repair_output_fields"] == ["items"]
 
 
 def test_invoice_amount_has_a_separate_price_total_ambiguity_check():
@@ -183,8 +182,8 @@ def test_invoice_amount_has_a_separate_price_total_ambiguity_check():
     questions = build_verification_questions(prepared).root
     key = "amount_rub::ambiguous"
     assert key in questions
-    assert "unit price" in questions[key].instructions
-    assert INVOICE_AMOUNT_RULE in questions[key].instructions
+    assert "unit price" in questions[key].model_dump_json()
+    assert INVOICE_AMOUNT_RULE in questions[key].model_dump_json()
     assert INVOICE_AMOUNT_RULE in EXTRACTION_PROMPT
 
 
@@ -199,8 +198,8 @@ def test_subject_and_item_unit_rules_are_shared_by_extractor_and_verifier():
         id="m1", role="user", text="Счёт ИП Смирнову: 2 ремонта, всего 1500 рублей",
     )], "invoice_draft")
     questions = build_verification_questions(prepared).root
-    assert INVOICE_SUBJECT_RULE in questions["subject::status_wrong"].instructions
-    assert ITEM_UNIT_RULE in questions["items[0].unit::value_wrong"].instructions
+    assert INVOICE_SUBJECT_RULE in questions["subject::status_wrong"].model_dump_json()
+    assert ITEM_UNIT_RULE in questions["items[0].unit::value_wrong"].model_dump_json()
     assert INVOICE_SUBJECT_RULE in EXTRACTION_PROMPT and ITEM_UNIT_RULE in EXTRACTION_PROMPT
 
 
@@ -236,13 +235,75 @@ def test_missing_subject_question_checks_named_goods_without_price_rules():
     from src.field_rules import INVOICE_SUBJECT_RULE
 
     prepared = prepare_fields(invoice_proposal(), messages(), "invoice_draft")
-    question = build_verification_questions(prepared).root["subject::status_wrong"].instructions
+    question = build_verification_questions(prepared).root["subject::status_wrong"].model_dump_json()
     assert INVOICE_SUBJECT_RULE in question
     assert "single billed goods/service category" in question
     assert "wrongly left missing" in question
     assert "several different" in question
     assert "total/count" not in question
     assert "unit_price_rub" not in question
+
+
+def test_missing_invoice_total_gets_a_targeted_computability_question():
+    from src.field_rules import INVOICE_AMOUNT_RULE
+
+    data = invoice_proposal().model_dump()
+    data["fields"]["amount_rub"] = {"status": "missing", "value": None, "evidence": []}
+    prepared = prepare_fields(ExtractionProposal.model_validate(data), messages(), "invoice_draft")
+    text = build_verification_questions(prepared).root["amount_rub::status_wrong"].model_dump_json()
+    assert "wrongly left missing" in text
+    assert "sum" in text and "line" in text
+    assert "unknown quantity" in text
+    assert "fee + fee" in INVOICE_AMOUNT_RULE
+    assert INVOICE_AMOUNT_RULE in EXTRACTION_PROMPT
+
+
+def test_missing_total_repair_sums_named_line_fees_without_inventing_item_quantities():
+    from src.pipeline import DocumentTypeDecision, process_selected_document
+
+    dialogue = [DocumentMessage(id="m1", role="user", text=(
+        "Счёт за настройку сервера и настройку роутера, стоимость каждой работы 750 рублей."
+    ))]
+    fields = {name: {"status": "missing", "value": None, "evidence": []}
+              for name in InvoiceFields.model_fields}
+    fields["items"] = {"status": "fillable", "value": [
+        {"description": name, "quantity": None, "unit": None, "unit_price_rub": None}
+        for name in ("настройка сервера", "настройка роутера")
+    ], "evidence": [{"message_id": "m1", "quote": dialogue[0].text}]}
+    initial = ExtractionProposal.model_validate({"fields": fields})
+    verified = []
+
+    class Verifier:
+        async def ainvoke(self, state, questions, response_model):
+            verified.append(state)
+            return response_model.model_validate({"answers": {
+                key: {"noul": 0.9 if key == "amount_rub::status_wrong" and
+                      questions.root[key].instructions["field"]["status"] == "missing" else 0.01}
+                for key in questions.root
+            }})
+
+    class Extractor:
+        async def extract(self, *args, **kwargs):
+            assert kwargs["repair_fields"] == ["amount_rub"]
+            repaired = initial.model_dump()
+            repaired["fields"]["amount_rub"] = {
+                "status": "fillable", "value": None,
+                "evidence": [{"message_id": "m1", "quote": dialogue[0].text}],
+                "calculation": {"expression": "fee + fee", "operands": [
+                    {"name": "fee", "source": {"message_id": "m1", "quote": "750"}},
+                ]},
+            }
+            return ExtractionProposal.model_validate(repaired)
+
+    result = asyncio.run(process_selected_document(
+        "local", dialogue, DocumentTypeDecision(document_type="invoice_draft", confidence=0.9),
+        Verifier(), Extractor(), initial_proposal=initial,
+    ))
+    assert result.fields.amount_rub.value == 1500
+    assert result.fields.amount_rub.derivation is not None
+    assert len(verified) == 2
+    assert result.fields.items.value == prepare_fields(initial, dialogue, "invoice_draft").items.value
+    assert all(item.quantity is None and item.unit_price_rub is None for item in result.fields.items.value)
 
 
 def test_omitted_subject_feedback_repairs_only_subject_without_copying_item_attributes():
@@ -267,7 +328,7 @@ def test_omitted_subject_feedback_repairs_only_subject_without_copying_item_attr
                 return await super().ainvoke(state, questions, response_model)
             return response_model.model_validate({"answers": {
                 key: {"noul": 0.9 if key == "subject::status_wrong" and
-                      state.checked_fields.subject.status == "missing" else 0.01}
+                      questions.root[key].instructions["field"]["status"] == "missing" else 0.01}
                 for key in questions.root
             }})
 

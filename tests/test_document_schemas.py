@@ -37,19 +37,22 @@ def test_partial_item_keeps_unknown_parts_null() -> None:
     assert item.model_dump(mode="json")["unit_price_rub"] is None
 
 
-def test_dev_labels_match_result_contract() -> None:
+def test_all_labels_match_result_contract() -> None:
     root = Path(__file__).resolve().parents[1]
-    dev_ids = {
-        case["case_id"]
+    case_ids = {
+        json.loads(line)["case_id"]
         for line in (root / "data/cases.jsonl").read_text().splitlines()
-        if (case := json.loads(line))["split"] == "dev"
+        if line.strip()
     }
     adapter = TypeAdapter(DocumentResult)
+    label_ids = []
     for line in (root / "data/labels.jsonl").read_text().splitlines():
         label = json.loads(line)
-        if label["case_id"] in dev_ids:
-            result = adapter.validate_python(label)
-            assert result.model_dump(mode="json", exclude_unset=True) == label
+        label_ids.append(label["case_id"])
+        result = adapter.validate_python(label)
+        assert result.model_dump(mode="json", exclude_unset=True) == label
+    assert len(label_ids) == len(set(label_ids))
+    assert set(label_ids) == case_ids
 
 
 @pytest.mark.parametrize("fields,reason", [({"amount_rub": {}}, "Нет запроса"), ({}, "")])

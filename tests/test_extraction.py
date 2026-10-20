@@ -237,3 +237,20 @@ def test_llm_failures_are_explicit(choice):
 
     with pytest.raises(LLMError):
         asyncio.run(run())
+
+
+@pytest.mark.parametrize("text, value, status", [
+    ("100 рублей 50 копеек", 100.5, "fillable"),
+    ("-100 рублей 50 копеек", -100.5, "invalid"),
+    ("-0 рублей 50 копеек", -0.5, "invalid"),
+])
+def test_signed_rubles_and_kopecks_keep_the_sign_of_the_whole_amount(text, value, status):
+    result = prepare(proposal("transfer_draft", amount_rub=filled(value, text)), text, "transfer_draft")
+    assert result.amount_rub.status == status
+    assert result.amount_rub.value == (value if status == "fillable" else None)
+
+
+def test_negative_zero_rubles_cannot_support_a_positive_amount():
+    text = "-0 рублей 50 копеек"
+    with pytest.raises(ExtractionError):
+        prepare(proposal("transfer_draft", amount_rub=filled(0.5, text)), text, "transfer_draft")

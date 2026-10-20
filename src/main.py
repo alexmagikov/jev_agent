@@ -3,12 +3,13 @@ import json
 from argparse import ArgumentParser
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from time import perf_counter
 from typing import Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from src.cases.document_type import DocumentMessage
-from src.client import AsyncJev
+from src.client import AsyncJev, JevUsage
 from src.schemas.document_schemas import DocumentResult
 from src.extraction import validate_messages
 from src.llm import AsyncLLMExtractor, LLMUsage
@@ -18,6 +19,7 @@ from src.schemas.schemas import DocumentType, SplitFilter, DataSplit, Probabilit
 from src.settings import JevClientSettings, LLMSettings, PipelineSettings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+LABEL_ADAPTER = TypeAdapter(DocumentResult)
 
 DEFAULT_INPUT_PATH = PROJECT_ROOT / "data" / "cases.jsonl"
 DEFAULT_LABELS_PATH = PROJECT_ROOT / "data" / "labels.jsonl"
@@ -100,6 +102,13 @@ def load_labels(path: Path, case_ids: set[str]) -> list[dict[str, object]]:
             if case_id in found_case_ids:
                 raise ValueError(f"Повторяющийся case_id в {path}: {case_id}")
 
+            try:
+                LABEL_ADAPTER.validate_python(label)
+            except ValidationError:
+                # Не раскрываем значения полей разметки в сообщении или traceback.
+                raise ValueError(
+                    f"Некорректная разметка в строке {line_number} файла {path}"
+                ) from None
             labels.append(label)
             found_case_ids.add(case_id)
 
@@ -190,6 +199,8 @@ def print_metrics(report: MetricsReport) -> None:
 
 
 def _print_field_metrics(name: str, metrics: FieldMetrics) -> None:
+    correct_values = round(metrics.true_positives * metrics.value_accuracy) if metrics.value_accuracy is not None else 0
+    expected_values = metrics.true_positives + metrics.false_negatives
     value_accuracy = (
         f"{metrics.value_accuracy:.1%}"
         if metrics.value_accuracy is not None
@@ -209,6 +220,7 @@ def _print_field_metrics(name: str, metrics: FieldMetrics) -> None:
         f"        precision={metrics.precision:.1%},\n"
         f"        recall={metrics.recall:.1%},\n"
         f"        value_accuracy={value_accuracy},\n"
+        f"        верных значений из всех ожидаемых={correct_values}/{expected_values},\n"
         f"        alias_aware_value_accuracy={alias_aware_accuracy},\n"
         f"        evidence_accuracy={evidence_accuracy},\n"
         f"        необоснованные заполнения={metrics.unsupported_fill_rate:.1%}\n"
@@ -238,12 +250,26 @@ def print_llm_usage(usage: LLMUsage) -> None:
     print(f"  Оценка стоимости по usage и заданным тарифам: {cost}")
 
 
+def print_jev_usage(usage: JevUsage | None) -> None:
+    if usage is None:
+        print("Jev: статистика SDK н/д")
+    else:
+        print(f"Jev: вызовов SDK={usage.sdk_calls}, ответов={usage.responses}, время={usage.elapsed_seconds:.2f} с")
+        print("  Внутренние HTTP-повторы SDK отдельно не измеряются.")
+        if usage.usage_reports:
+            print(f"  Токены Jev: вход={usage.input_tokens}, выход={usage.output_tokens}; "
+                  f"usage получен для {usage.usage_reports}/{usage.responses} ответов")
+        else:
+            print("  Токены Jev: н/д (нет полного usage)")
+    print("  Стоимость Jev не включена в оценку стоимости LLM.")
+
+
 async def main(
     input_path: Path = DEFAULT_INPUT_PATH,
     output_path: Path | None = None,
     labels_path: Path = DEFAULT_LABELS_PATH,
     split: SplitFilter = "dev",
-    mode: Literal["classification", "full", "llm-only"] = "classification",
+    mode: Literal["classification", "full", "llm-only"] = "full",
     limit: int | None = None,
     debug: bool = False,
     fail_fast: bool = False,
@@ -252,6 +278,7 @@ async def main(
         raise ValueError("Неизвестный режим обработки")
     if limit is not None and limit < 1:
         raise ValueError("--limit должен быть положительным")
+    
     document_mode = mode in ("full", "llm-only")
     default_outputs = {
         "classification": DEFAULT_OUTPUT_PATH, "full": DEFAULT_FULL_OUTPUT_PATH,
@@ -271,7 +298,9 @@ async def main(
         cases = cases[:limit]
     if not cases:
         raise ValueError("В выбранной выборке нет кейсов")
+    
     labels = load_labels(labels_path, {case.case_id for case in cases})
+    run_started = perf_counter()
     stopped_error: PipelineError | None = None
     client = None
     if mode != "llm-only":
@@ -285,6 +314,8 @@ async def main(
         labels_by_id = {label["case_id"]: label for label in labels}
         if mode == "llm-only":
             print("Режим llm-only: классификация LLM → извлечение LLM → Python; без проверок Jev.", flush=True)
+        else:
+            print("Режим full: классификация Jev → извлечение LLM → Python → проверка Jev → ограниченный ремонт.", flush=True)
         if debug:
             print("DEBUG: ответы модели и эталоны могут содержать реквизиты; не публикуйте вывод.", flush=True)
         async with AsyncLLMExtractor(LLMSettings(), debug=debug) as extractor:
@@ -321,6 +352,9 @@ async def main(
                     write_errors(errors, errors_path)
             finally:
                 print_llm_usage(extractor.usage)
+                if client is not None:
+                    print_jev_usage(getattr(client, "usage", None))
+                print(f"Полное время прогона ({mode}): {perf_counter() - run_started:.2f} с", flush=True)
     else:
         results = await classify_cases(cases, client)
         write_results(results, output_path)

@@ -38,6 +38,31 @@ def write_input(path, duplicate=False):
     path.write_text(json.dumps(row) + "\n" + (json.dumps(row) if duplicate else ""))
 
 
+def test_printed_correct_value_count_includes_missing_expected_fields(capsys):
+    expected = result().model_dump(mode="json")
+    expected["fields"]["amount_rub"].update(status="fillable", value=100, evidence=["m1"])
+    expected["fields"]["destination_bank"].update(status="fillable", value="Сбер", evidence=["m1"])
+    actual = result().model_dump(mode="json")
+    actual["fields"]["amount_rub"].update(status="fillable", value=100, evidence=["m1"])
+    runner.print_metrics(runner.calculate_metrics([expected], [actual]))
+    text = capsys.readouterr().out
+    assert "value_accuracy=100.0%" in text
+    assert "верных значений из всех ожидаемых=1/2" in text
+
+
+def test_jev_statistics_label_partial_usage_and_do_not_claim_a_total_price(capsys):
+    from src.client import JevUsage
+
+    runner.print_jev_usage(JevUsage(sdk_calls=3, responses=2, usage_reports=1,
+                                  input_tokens=17, output_tokens=5, elapsed_seconds=.5))
+    text = capsys.readouterr().out
+    assert "вызовов SDK=3" in text
+    assert "вход=17, выход=5" in text
+    assert "usage получен для 1/2" in text
+    assert "Внутренние HTTP-повторы SDK отдельно не измеряются" in text
+    assert "Стоимость Jev не включена" in text
+
+
 def test_writing_full_results_preserves_null_and_creates_directory(tmp_path):
     output = tmp_path / "outputs" / "predictions.jsonl"
     runner.write_results([result()], output)
@@ -77,6 +102,9 @@ def test_main_full_writes_predictions_and_prints_metrics(monkeypatch, tmp_path, 
     assert len(calls) == 1
     assert json.loads(output_path.read_text())["fields"]["amount_rub"]["value"] is None
     printed = capsys.readouterr().out
+    assert "Режим full" in printed
+    assert "Полное время прогона" in printed
+    assert "Jev" in printed and "Стоимость Jev не включена" in printed
     assert "1/1 (100.0%)" in printed
     assert "вход=100" in printed and "выход=20" in printed
     assert ("Ожидаемый результат" in printed) is debug
@@ -134,7 +162,7 @@ def test_debug_prints_expected_before_inference_even_on_failure(monkeypatch, tmp
     path, labels = tmp_path / "cases.jsonl", tmp_path / "labels.jsonl"
     write_input(path)
     label = result().model_dump(mode="json")
-    label["fields"]["destination_bank"]["value"] = "EXPECTED_ONLY"
+    label["fields"]["destination_bank"].update(status="fillable", value="EXPECTED_ONLY", evidence=["m1"])
     labels.write_text(json.dumps(label))
 
     async def fail(*args, **kwargs):
@@ -302,3 +330,27 @@ def test_failed_checkpoint_replacement_keeps_previous_complete_file(monkeypatch,
     assert output.read_text() == previous
     assert list(tmp_path.iterdir()) == [output]
 
+
+
+@pytest.mark.parametrize("mode", ["classification", "full", "llm-only"])
+@pytest.mark.parametrize("problem", ["type", "missing_field", "status_value"])
+def test_bad_labels_fail_before_client_creation(monkeypatch, tmp_path, mode, problem):
+    path, labels, output = batch_files(tmp_path, count=1)
+    data = result().model_dump(mode="json")
+    if problem == "type":
+        data["document_type"] = "not-a-document"
+    elif problem == "missing_field":
+        del data["fields"]["amount_rub"]
+    else:
+        data["fields"]["amount_rub"]["value"] = 100
+    labels.write_text(json.dumps(data))
+    output.write_text("previous run")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("invalid labels must be rejected before configuring API clients")
+    monkeypatch.setattr(runner, "JevClientSettings", forbidden)
+    monkeypatch.setattr(runner, "LLMSettings", forbidden)
+    with pytest.raises(ValueError, match="разметк"):
+        asyncio.run(runner.main(path, output, labels, mode=mode))
+    assert output.read_text() == "previous run"
+    assert not output.with_name("predictions.errors.jsonl").exists()

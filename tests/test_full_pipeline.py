@@ -126,7 +126,8 @@ def test_verification_questions_serialize_as_top_level_questions():
     dumped = questions.model_dump(mode="json")
     assert "root" not in dumped
     assert all(question["type"] == "noul" for question in dumped.values())
-    assert "assistant" in dumped["amount_rub::unsupported"]["instructions"].lower()
+    assert isinstance(dumped["amount_rub::unsupported"]["instructions"]["field"], dict)
+    assert set(dumped["amount_rub::unsupported"]["criteria"]) == {"true", "false"}
 
 
 def test_invoice_formula_is_computed_before_jev_sees_it():
@@ -152,11 +153,12 @@ def test_invoice_formula_is_computed_before_jev_sees_it():
     result = asyncio.run(process_document("C1", dialogue, client, InvoiceExtractor()))
     assert result.fields.amount_rub.value == 12000
     state, questions = client.verification_calls[0]
-    assert state.checked_fields.amount_rub.value == 12000
-    assert state.checked_fields.amount_rub.derivation
+    claim = questions.root["amount_rub::formula_wrong"].instructions["field"]
+    assert claim["value"] == 12000
+    assert claim["derivation"]
     assert "amount_rub::formula_wrong" in questions.root
-    assert state.proposal.fields["amount_rub"].calculation.expression == "hours * price"
-    assert "proposal.fields.amount_rub.calculation" in questions.root["amount_rub::formula_wrong"].instructions
+    assert claim["calculation"]["expression"] == "hours * price"
+    assert "instructions.field.calculation" in questions.root["amount_rub::formula_wrong"].model_dump_json()
 
 
 def test_retry_can_recover_without_reclassifying():
@@ -267,4 +269,4 @@ def test_jev_retry_and_logs_use_short_feedback_without_prompt(monkeypatch, capsy
     assert any("amount_rub::unsupported" in remark and "0.95" in remark for remark in feedback)
     assert all("GENERAL_RULES_FOR_JEV_ONLY" not in remark for remark in feedback)
     assert "GENERAL_RULES_FOR_JEV_ONLY" not in capsys.readouterr().out
-    assert "GENERAL_RULES_FOR_JEV_ONLY" in client.verification_calls[0][1].root["amount_rub::unsupported"].instructions
+    assert "GENERAL_RULES_FOR_JEV_ONLY" in client.verification_calls[0][0].rules

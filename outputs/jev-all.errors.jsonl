@@ -1,2 +1,10 @@
-{"case_id": "C007", "error": "C007: проверки не пройдены за 2 попытки: LLM вернула JSON, не соответствующий выходной схеме:\nJSON: некорректный JSON"}
-{"case_id": "C028", "error": "C028: проверки не пройдены за 2 попытки: Ответ оборван по лимиту токенов; сократи ответ до требуемой схемы"}
+{"case_id": "C001", "error": "Ошибка Jev: TypeSafeAPIError"}
+{"case_id": "C002", "error": "Ошибка Jev: TypeSafeAPIError"}
+{"case_id": "C003", "error": "Ошибка Jev: TypeSafeAPIError"}
+{"case_id": "C004", "error": "Ошибка Jev: TypeSafeAPIError"}
+{"case_id": "C005", "error": "Ошибка Jev: TypeSafeAPIError"}
+{"case_id": "C006", "error": "Ошибка Jev: TypeSafeAPIError"}
+{"case_id": "C007", "error": "Ошибка Jev: TypeSafeAPIError"}
+{"case_id": "C008", "error": "Ошибка Jev: TypeSafeAPIError"}
+{"case_id": "C009", "error": "Ошибка Jev: TypeSafeAPIError"}
+{"case_id": "C010", "error": "Ошибка Jev: TypeSafeAPIError"}

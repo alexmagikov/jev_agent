@@ -85,7 +85,7 @@ def test_invoice_price_ambiguity_rule_does_not_apply_to_transfer_amount():
     _, _, fields = _inputs()
     questions = verification.build_verification_questions(fields).root
     assert "amount_rub::ambiguous" not in questions
-    assert all(INVOICE_AMOUNT_RULE not in q.instructions for q in questions.values())
+    assert all(INVOICE_AMOUNT_RULE not in q.model_dump_json() for q in questions.values())
 
 
 @pytest.mark.parametrize("items_present", [False, True])
@@ -111,19 +111,19 @@ def test_feedback_contains_specific_check_without_general_or_item_rules(monkeypa
 
     class SelectiveJev:
         async def ainvoke(self, state, questions, response_model):
-            captured.append(questions.root[target].instructions)
+            captured.append((state, questions.root[target]))
             return response_model.model_validate({"answers": {
                 key: {"noul": 0.89 if key == target else 0.01}
                 for key in questions.root
             }})
 
     feedback = asyncio.run(verify_fields(messages, "invoice_draft", proposal, fields, SelectiveJev()))
-    assert "GENERAL_RULES_FOR_JEV_ONLY" in captured[0]
-    assert "ITEM_RULES_FOR_JEV_ONLY" in captured[0]
+    assert "GENERAL_RULES_FOR_JEV_ONLY" in captured[0][0].rules
+    assert "ITEM_RULES_FOR_JEV_ONLY" in captured[0][1].instructions["rules"]
     assert len(feedback) == 1
     assert feedback[0].startswith(target)
     assert "0.89" in feedback[0]
-    assert "checked_fields.items" in feedback[0]
+    assert "`items`" in feedback[0]
     assert "GENERAL_RULES_FOR_JEV_ONLY" not in feedback[0]
     assert "ITEM_RULES_FOR_JEV_ONLY" not in feedback[0]
     assert ("unsupported by its cited user messages" if items_present else "Is the status") in feedback[0]

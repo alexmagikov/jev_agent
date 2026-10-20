@@ -21,6 +21,7 @@ from src.schemas.document_schemas import (
 from src.extraction import ExtractionError, ExtractionProposal, PreparedFields, prepare_fields, validate_messages
 from src.llm import AsyncLLMExtractor, LLMError, LLMRateLimitError, LLMResponseError
 from src.verification import VerificationError, verify_fields
+from src.repairs import merge_repair, plan_repair, repair_roots
 
 
 class DocumentTypeDecision(BaseModel):
@@ -174,6 +175,7 @@ async def process_selected_document(
     feedback: list[str] = []
     repair_base: ExtractionProposal | None = None
     repair_fields: list[str] = []
+    repair_paths: list[str] = []
     validation_failures = []
     failure_reason = "semantic_rejection"
 
@@ -188,13 +190,10 @@ async def process_selected_document(
             else:
                 proposal = await extractor.extract(
                     messages, decision.document_type, feedback=feedback,
-                    previous_proposal=repair_base, repair_fields=repair_fields,
+                    previous_proposal=repair_base, repair_fields=repair_fields, repair_paths=repair_paths,
                 )
                 # Защита уже проверенных полей, даже если LLM проигнорировала область ремонта.
-                proposal = ExtractionProposal(fields={
-                    name: proposal.fields[name] if name in repair_fields else field
-                    for name, field in repair_base.fields.items()
-                })
+                proposal = merge_repair(repair_base, proposal, repair_paths)
 
             if debug:
                 print(f"[{case_id}] Python: проверка источников, форматов и расчётов…", flush=True)
@@ -252,9 +251,11 @@ async def process_selected_document(
                 confidence=decision.confidence, fields=fields,
             )
         
-        repair_fields = sorted({remark.split("::", 1)[0].split("[", 1)[0] for remark in feedback})
-        if not set(repair_fields) <= set(proposal.fields):
-            raise PipelineError(f"{case_id}: проверка вернула неизвестное поле для исправления")
+        try:
+            repair_paths = plan_repair(proposal, [remark.split("::", 1)[0] for remark in feedback])
+        except ValueError as error:
+            raise PipelineError(f"{case_id}: проверка вернула неизвестное поле для исправления") from error
+        repair_fields = repair_roots(repair_paths)
         repair_base = proposal.model_copy(deep=True)
 
     summary = "; ".join(feedback)

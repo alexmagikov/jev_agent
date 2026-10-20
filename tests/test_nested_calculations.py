@@ -72,7 +72,7 @@ def test_each_item_owns_its_formula_and_final_items_remain_plain():
     assert "items[0].unit_price_rub" in fields.items.derivation
     assert "items[1].unit_price_rub" in fields.items.derivation
     assert "calculation" not in fields.model_dump_json()
-    question = build_verification_questions(fields).root["items::formula_wrong"].instructions
+    question = build_verification_questions(fields).root["items::formula_wrong"].model_dump_json()
     assert "unit_price_calculation" in question
     assert "proposal.calculations" not in question
 
@@ -111,8 +111,8 @@ def test_top_level_calculation_merges_all_operand_message_ids():
     result = prepare_fields(ExtractionProposal.model_validate(data), messages, "invoice_draft")
     assert result.amount_rub.value == 12000
     assert result.amount_rub.evidence == ["m1", "m2", "m3"]
-    question = build_verification_questions(result).root["amount_rub::formula_wrong"].instructions
-    assert "proposal.fields.amount_rub.calculation" in question
+    question = build_verification_questions(result).root["amount_rub::formula_wrong"].model_dump_json()
+    assert "instructions.field.calculation" in question
 
 
 @pytest.mark.parametrize("name,status,value", [
@@ -199,7 +199,7 @@ def test_nested_llm_response_reaches_verifier_and_final_jsonl(tmp_path):
                     document_type=SimpleNamespace(choice="invoice_draft", confidence=0.9),
                     none_reason=SimpleNamespace(choice="no_request"),
                 ))
-            checked.append(state)
+            checked.append(questions)
             return response_model.model_validate({"answers": {
                 name: {"noul": 0.01} for name in questions.root
             }})
@@ -214,8 +214,8 @@ def test_nested_llm_response_reaches_verifier_and_final_jsonl(tmp_path):
 
     result = asyncio.run(run())
     assert len(checked) == 1
-    assert checked[0].proposal.fields["items"].value[1].unit_price_calculation is not None
-    assert checked[0].checked_fields.items.value[1].unit_price_rub == 40
+    assert checked[0].root["items[1].unit_price_rub::value_wrong"].instructions["field"]["calculation"] is not None
+    assert checked[0].root["items[1].unit_price_rub::value_wrong"].instructions["field"]["value"] == 40
     output = tmp_path / "predictions.jsonl"
     write_results([result], output)
     saved = json.loads(output.read_text())

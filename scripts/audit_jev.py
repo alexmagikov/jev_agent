@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from pydantic import ValidationError
-from typesafe_sdk import AsyncTypeSafeClient, RetryPolicy
+from typesafe_sdk import AsyncTypeSafeClient, RetryPolicy, TypeSafeError
 
 from src.cases.document_type import NONE_REASON_TEXT
 from src.extraction import ExtractionProposal, prepare_fields
@@ -17,7 +17,7 @@ from src.llm import AsyncLLMExtractor, EXTRACTION_PROMPT
 from src.main import DEFAULT_INPUT_PATH, DEFAULT_LABELS_PATH, load_cases, load_labels
 from src.metrics import calculate_metrics
 from src.field_rules import equivalent_field_values
-from src.pipeline import DocumentTypeDecision, PipelineError, process_selected_document
+from src.pipeline import DocumentTypeDecision, PipelineError, PipelineRejectionError, process_selected_document
 from src.settings import JevClientSettings, LLMSettings, PipelineSettings
 
 
@@ -48,6 +48,14 @@ class BudgetedExtractor(AsyncLLMExtractor):
     async def _send(self, payload):
         self.budget.spend()
         return await super()._send(payload)
+
+
+def audit_llm_settings(settings):
+    """Сетевые повторы отключены; явные ожидания 429 входят в HTTP-бюджет."""
+    rate_limit_retries = settings.rate_limit_retries
+    if rate_limit_retries is None:
+        rate_limit_retries = settings.max_retries
+    return settings.model_copy(update={"max_retries": 0, "rate_limit_retries": rate_limit_retries})
 
 
 class AuditJev:
@@ -110,7 +118,7 @@ async def audit_cases(cases, extractor, jev, *, max_jev_calls=10, max_attempts=2
 
         try:
             initial = None
-            if initial_seeds is None:
+            if initial_seeds is None or case.case_id not in initial_seeds:
                 classification = await extractor.classify(case.messages)
                 decision = DocumentTypeDecision(
                     document_type=classification.document_type, confidence=classification.confidence,
@@ -139,11 +147,19 @@ async def audit_cases(cases, extractor, jev, *, max_jev_calls=10, max_attempts=2
             record["status"] = "budget_exhausted"
             emit(record)
             break
+        except TypeSafeError as error:
+            # Сетевые ошибки SDK также наследуют OSError; это не сбой записи.
+            record.update(status="api_error", error_type=type(error).__name__)
+            emit(record)
+            break
         except OSError:
             raise  # Сбой сохранения не должен выглядеть как результат API-проверки.
         except Exception as error:
             # SDK-ошибка может содержать тело сервера: не сохраняем её текст или traceback.
             record["error_type"] = type(error).__name__
+            if isinstance(error, PipelineRejectionError):
+                record["failure_reason"] = error.failure_reason
+                record["validation_failures"] = error.validation_failures
             if isinstance(error, PipelineError) and stage == "enhanced" and error.__cause__ is None:
                 record["status"] = "rejected"
             else:
@@ -154,7 +170,7 @@ async def audit_cases(cases, extractor, jev, *, max_jev_calls=10, max_attempts=2
     return records
 
 
-def load_initial_seeds(path, cases):
+def load_initial_seeds(path, cases, *, allow_missing=False):
     """Только диалог, решение и исходный кандидат; никакие оценки/эталоны не переносятся."""
     latest = {}
     with path.open(encoding="utf-8") as stream:
@@ -165,10 +181,12 @@ def load_initial_seeds(path, cases):
     seeds = {}
     for case in cases:
         record = latest.get(case.case_id)
-        if record is None or record.get("before") is None:
-            raise ValueError(f"Нет исходного результата для {case.case_id}")
-        if record.get("messages") != [message.model_dump(mode="json") for message in case.messages]:
+        if record is not None and record.get("messages") != [message.model_dump(mode="json") for message in case.messages]:
             raise ValueError(f"Изменился исходный диалог {case.case_id}")
+        if record is None or record.get("before") is None:
+            if allow_missing:
+                continue
+            raise ValueError(f"Нет исходного результата для {case.case_id}")
         decision = DocumentTypeDecision.model_validate(record.get("decision"))
         proposal = None
         if decision.document_type != "none":
@@ -179,6 +197,8 @@ def load_initial_seeds(path, cases):
         if record["before"].get("fields") != checked or record["before"].get("document_type") != decision.document_type:
             raise ValueError(f"Исходный кандидат не соответствует сохранённому результату {case.case_id}")
         seeds[case.case_id] = decision, proposal
+    if allow_missing and not seeds:
+        raise ValueError("В trace нет совместимых исходных кандидатов")
     return seeds
 
 
@@ -187,7 +207,7 @@ def build_report(records, labels):
     selected = [targets[record["case_id"]] for record in records]
     report = {"method": "paired verification-only: shared LLM classification and identical seed",
               "primary_target": "exact field status and value; evidence metrics reported separately",
-              "attempted_cases": len(records), "complete_pairs": 0, "incomplete_cases": [],
+              "attempted_cases": len(records), "complete_pairs": 0, "incomplete_cases": [], "case_failures": [],
               "field_changes": {"corrected": 0, "regressed": 0, "details": []},
               "alias_aware_field_changes": {"corrected": 0, "regressed": 0, "details": []},
               "item_attribute_changes": {"corrected": 0, "regressed": 0, "details": []},
@@ -241,6 +261,9 @@ def build_report(records, labels):
     for record in records:
         if record["before"] is None or record["after"] is None:
             report["incomplete_cases"].append(record["case_id"])
+            report["case_failures"].append({key: record[key] for key in (
+                "case_id", "status", "error_type", "failure_reason", "validation_failures",
+            ) if key in record})
             continue
         report["complete_pairs"] += 1
         target = targets[record["case_id"]]
@@ -294,23 +317,36 @@ def build_parser():
     parser.add_argument("--labels", type=Path, default=DEFAULT_LABELS_PATH)
     parser.add_argument("--split", choices=("dev", "test", "all"), default="dev")
     parser.add_argument("--limit", type=positive, default=5)
+    parser.add_argument("--case-id", action="append", dest="case_ids",
+                        help="Проверить только указанный кейс; можно повторить. Это диагностика, не общий benchmark")
     parser.add_argument("--max-jev-calls", type=positive, default=10)
     parser.add_argument("--max-llm-calls", type=positive, default=30)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--seed-trace", type=Path,
                         help="Повторно проверить исходные кандидаты из trace.jsonl без новой baseline-генерации")
+    parser.add_argument("--allow-missing-seeds", action="store_true",
+                        help="С --seed-trace: сгенерировать только отсутствующие исходные кандидаты")
     return parser
 
 
 async def run_live(args):
-    cases = load_cases(args.input, args.split)[:args.limit]
+    cases = load_cases(args.input, args.split)
+    if args.case_ids:
+        missing = set(args.case_ids) - {case.case_id for case in cases}
+        if missing:
+            raise ValueError("В выбранной выборке нет кейсов: " + ", ".join(sorted(missing)))
+        cases = [case for case in cases if case.case_id in set(args.case_ids)]
+    cases = cases[:args.limit]
     if not cases:
         raise ValueError("В выбранной выборке нет кейсов")
     labels = load_labels(args.labels, {case.case_id for case in cases})  # Только локальный scoring.
-    initial_seeds = load_initial_seeds(args.seed_trace, cases) if args.seed_trace else None
+    if args.allow_missing_seeds and not args.seed_trace:
+        raise ValueError("--allow-missing-seeds требует --seed-trace")
+    initial_seeds = (load_initial_seeds(args.seed_trace, cases, allow_missing=args.allow_missing_seeds)
+                     if args.seed_trace else None)
     llm_settings, jev_settings, pipeline = LLMSettings(), JevClientSettings(), PipelineSettings()
-    # Аудит считает фактические вызовы без скрытых сетевых повторов SDK/LLM.
-    llm_settings = llm_settings.model_copy(update={"max_retries": 0, "rate_limit_retries": 0})
+    # BudgetedExtractor считает каждый HTTP-запрос, включая восстановление после 429.
+    llm_settings = audit_llm_settings(llm_settings)
     directory = args.output_dir or Path(".scratch") / ("jev-audit-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f"))
     directory.mkdir(parents=True, exist_ok=False)
     budget = APICallBudget(args.max_llm_calls)
@@ -338,7 +374,13 @@ async def run_live(args):
                               dataset_sha256=hashlib.sha256(args.input.read_bytes()).hexdigest(),
                               labels_sha256=hashlib.sha256(args.labels.read_bytes()).hexdigest(),
                               seed_trace_sha256=hashlib.sha256(args.seed_trace.read_bytes()).hexdigest() if args.seed_trace else None,
-                              baseline_origin="saved_trace" if initial_seeds is not None else "fresh_llm",
+                              baseline_origin=("fresh_llm" if initial_seeds is None else
+                                               "saved_trace" if len(initial_seeds) == len(cases) else
+                                               "saved_and_fresh_trace"),
+                              saved_seed_cases=[case.case_id for case in cases
+                                                if initial_seeds is not None and case.case_id in initial_seeds],
+                              fresh_seed_cases=[case.case_id for case in cases
+                                                if initial_seeds is None or case.case_id not in initial_seeds],
                               extraction_prompt_sha256=hashlib.sha256(EXTRACTION_PROMPT.encode()).hexdigest(),
                               verification_code_sha256=hashlib.sha256((Path(__file__).resolve().parents[1] / "src/verification.py").read_bytes()).hexdigest(),
                               field_rules_sha256=hashlib.sha256((Path(__file__).resolve().parents[1] / "src/field_rules.py").read_bytes()).hexdigest(),
@@ -354,6 +396,10 @@ async def run_live(args):
     changes = report["item_attribute_changes"]
     print(f"Атрибуты позиций отдельно (не складываются с полями): исправлено {changes['corrected']}; "
           f"испорчено {changes['regressed']}", flush=True)
+    for failure in report["case_failures"]:
+        print(f"  Незавершённый кейс {failure['case_id']}: {failure.get('failure_reason', failure['status'])}", flush=True)
+        for item in failure.get("validation_failures", []):
+            print(f"    Попытка {item['attempt']}: {item['stage']} / {item['code']}", flush=True)
     for side, title in (("before", "До Jev"), ("after", "После Jev")):
         values = report[side]
         print(f"{title}: верных ожидаемых значений {values['correct_expected_values']}/{values['expected_fillable_values']}; "

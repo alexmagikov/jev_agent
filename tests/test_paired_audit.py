@@ -47,7 +47,7 @@ class Jev:
         self.states.append(state)
         assert "GOLD_ONLY_MARKER" not in repr((state, questions))
         return response_model.model_validate({"answers": {
-            key: {"noul": 0.99 if key == "amount_rub::superseded" and state.checked_fields.amount_rub.value == 100 else 0.01}
+            key: {"noul": 0.99 if key == "amount_rub::superseded" and questions.root[key].instructions["field"]["value"] == 100 else 0.01}
             for key in questions.root
         }})
 
@@ -110,6 +110,44 @@ def test_api_errors_are_sanitized_and_stop_further_paid_calls():
     assert "DO_NOT_PRINT_SECRET" not in json.dumps(records)
 
 
+@pytest.mark.parametrize(("kind", "code", "stage"), [
+    ("llm", "output_token_limit", "llm_response"),
+    ("python", "unsupported_numeric_value", "python_validation"),
+])
+def test_rejected_repair_records_safe_validation_reason_without_an_accepted_fallback(kind, code, stage):
+    from src.extraction import ExtractionError
+    from src.llm import LLMResponseError
+
+    class InvalidRepair(Extractor):
+        async def extract(self, *args, **kwargs):
+            if kwargs.get("repair_fields"):
+                error_type = LLMResponseError if kind == "llm" else ExtractionError
+                raise error_type("DO_NOT_PRINT_SECRET", code=code)
+            return proposal(100)
+
+    records = asyncio.run(audit_cases([case()], InvalidRepair(), Jev()))
+    record = records[0]
+    assert record["status"] == "rejected"
+    assert record["after"] is None
+    assert record["failure_reason"] == "invalid_extraction"
+    assert record["validation_failures"] == [{"attempt": 2, "stage": stage, "code": code}]
+    assert "DO_NOT_PRINT_SECRET" not in json.dumps(records)
+    report = build_report(records, [label()])
+    assert report["conclusion"] == "incomplete"
+    assert report["case_failures"][0]["validation_failures"] == record["validation_failures"]
+
+
+def test_repeated_semantic_rejection_is_distinct_from_an_invalid_repair_response():
+    class StillWrong(Extractor):
+        async def extract(self, *args, **kwargs):
+            return proposal(100)
+
+    record = asyncio.run(audit_cases([case()], StillWrong(), Jev()))[0]
+    assert record["status"] == "rejected" and record["after"] is None
+    assert record["failure_reason"] == "semantic_rejection"
+    assert record["validation_failures"] == []
+
+
 def test_budget_and_cli_require_explicit_paid_opt_in():
     budget = APICallBudget(1)
     budget.spend()
@@ -120,6 +158,52 @@ def test_budget_and_cli_require_explicit_paid_opt_in():
     assert args.max_jev_calls == 10
     assert args.max_llm_calls == 30
     assert args.limit == 5
+
+
+@pytest.mark.parametrize(("configured", "expected"), [(None, 2), (0, 0), (2, 2)])
+def test_audit_uses_explicit_counted_429_retries_without_network_retries(configured, expected):
+    from scripts.audit_jev import audit_llm_settings
+    from src.settings import LLMSettings
+
+    settings = LLMSettings(_env_file=None, LLM_API_KEY="fake", LLM_MODEL="small",
+                           LLM_MAX_RETRIES=2, LLM_RATE_LIMIT_RETRIES=configured)
+    bounded = audit_llm_settings(settings)
+    assert bounded.max_retries == 0
+    assert bounded.rate_limit_retries == expected
+
+
+@pytest.mark.parametrize("maximum", [1, 2])
+def test_429_recovery_cannot_exceed_audit_http_budget(monkeypatch, maximum):
+    import httpx2
+    from scripts.audit_jev import audit_llm_settings
+    from src.settings import LLMSettings
+
+    calls = []
+    async def sleep(delay):
+        pass
+    monkeypatch.setattr("src.llm.asyncio.sleep", sleep)
+    def respond(request):
+        calls.append(request)
+        if len(calls) == 1:
+            return httpx2.Response(429, headers={"Retry-After": "0"})
+        return httpx2.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({
+            "document_type": "none", "confidence": 0.9, "none_reason": "no_request",
+        })}}]})
+    async def run():
+        settings = audit_llm_settings(LLMSettings(_env_file=None, LLM_API_KEY="fake", LLM_MODEL="small",
+                                                 LLM_RATE_LIMIT_RETRIES=2))
+        budget = APICallBudget(maximum)
+        async with httpx2.AsyncClient(transport=httpx2.MockTransport(respond)) as client:
+            async with BudgetedExtractor(settings, budget) as extractor:
+                extractor._client = client
+                if maximum == 1:
+                    with pytest.raises(AuditBudgetError):
+                        await extractor.classify(case().messages)
+                else:
+                    assert (await extractor.classify(case().messages)).document_type == "none"
+                assert budget.used == maximum
+    asyncio.run(run())
+    assert len(calls) == maximum
 
 
 def test_llm_budget_is_checked_before_the_underlying_http_request(monkeypatch):
@@ -142,6 +226,55 @@ def test_llm_budget_is_checked_before_the_underlying_http_request(monkeypatch):
 
     asyncio.run(run())
     assert len(requests) == 1
+
+
+@pytest.mark.parametrize("protocol", ["openai", "anthropic"])
+def test_token_limit_failure_has_a_safe_code_from_the_real_response_parser(protocol):
+    from src.llm import AsyncLLMExtractor, LLMResponseError
+    from src.settings import LLMSettings
+
+    settings = LLMSettings(_env_file=None, LLM_API_KEY="fake", LLM_MODEL="small",
+                           LLM_API_PROTOCOL=protocol, LLM_RESPONSE_FORMAT="text")
+    extractor = AsyncLLMExtractor(settings)
+    raw = ({"content": [{"type": "text", "text": "PRIVATE_MODEL_TEXT"}], "stop_reason": "max_tokens"}
+           if protocol == "anthropic" else
+           {"choices": [{"finish_reason": "length", "message": {"content": "PRIVATE_MODEL_TEXT"}}]})
+    with pytest.raises(LLMResponseError) as raised:
+        extractor._parse_response(json.dumps(raw).encode())
+    assert raised.value.code == "output_token_limit"
+    assert "PRIVATE_MODEL_TEXT" not in str(raised.value)
+
+
+def test_unsupported_direct_total_has_a_safe_code_from_real_python_validation():
+    from src.extraction import ExtractionError, prepare_fields
+
+    unsupported = proposal(200)
+    unsupported.fields["amount_rub"].value = 300
+    with pytest.raises(ExtractionError) as raised:
+        prepare_fields(unsupported, case().messages, "transfer_draft")
+    assert raised.value.code == "unsupported_numeric_value"
+
+
+@pytest.mark.parametrize("kind", ["llm", "python"])
+def test_unknown_diagnostic_codes_cannot_contain_arbitrary_error_text(kind):
+    from src.extraction import ExtractionError
+    from src.llm import LLMResponseError
+
+    error = (LLMResponseError if kind == "llm" else ExtractionError)(
+        "PRIVATE_MESSAGE", code="PRIVATE_CUSTOM_CODE",
+    )
+    assert error.code == ("invalid_response" if kind == "llm" else "invalid_proposal")
+
+
+def test_unknown_target_case_is_rejected_before_any_api_setup(tmp_path, monkeypatch):
+    import scripts.audit_jev as module
+
+    path = tmp_path / "cases.jsonl"
+    path.write_text(case().model_dump_json())
+    monkeypatch.setattr(module, "LLMSettings", lambda: pytest.fail("API setup must not run"))
+    args = build_parser().parse_args(["--live", "--input", str(path), "--case-id", "UNKNOWN"])
+    with pytest.raises(ValueError, match="UNKNOWN"):
+        asyncio.run(module.run_live(args))
 
 
 def test_jev_audit_collects_real_response_usage_without_a_second_sdk_request():
@@ -301,7 +434,57 @@ def test_saved_trace_loader_rejects_missing_seed_or_inconsistent_checked_fields(
         load_initial_seeds(path, [case()])
 
 
-def test_saved_seed_cli_wires_recheck_and_writes_a_separate_report(tmp_path, monkeypatch, capsys):
+def test_partial_seed_trace_requires_opt_in_and_keeps_the_original_candidate(tmp_path):
+    from scripts.audit_jev import load_initial_seeds
+
+    record = asyncio.run(audit_cases([case()], Extractor(), Jev()))[0]
+    path = tmp_path / "trace.jsonl"
+    path.write_text(json.dumps(record))
+    with pytest.raises(ValueError):
+        load_initial_seeds(path, [case(), case("C2")])
+    seeds = load_initial_seeds(path, [case(), case("C2")], allow_missing=True)
+    assert list(seeds) == ["C1"]
+    assert seeds["C1"][1].fields["amount_rub"].value == 100  # Не исправленный after=200.
+    with pytest.raises(ValueError):
+        load_initial_seeds(path, [case("C2")], allow_missing=True)
+    assert build_parser().parse_args(["--allow-missing-seeds"]).allow_missing_seeds
+
+
+def test_mixed_saved_and_fresh_seeds_reverify_every_candidate_without_old_verdicts():
+    from src.pipeline import DocumentTypeDecision
+
+    class MixedExtractor(Extractor):
+        async def extract(self, *args, **kwargs):
+            self.extractions.append(kwargs)
+            return proposal(200 if kwargs.get("repair_fields") else 100)
+
+    extractor, jev = MixedExtractor(), Jev()
+    seeds = {"C1": (DocumentTypeDecision(document_type="transfer_draft", confidence=0.9), proposal(100))}
+    records = asyncio.run(audit_cases([case(), case("C2")], extractor, jev, initial_seeds=seeds))
+    assert extractor.classifications == 1
+    assert len(jev.states) == 4  # Оба исходных ответа и оба ремонта проверены заново.
+    assert all(r["before"]["fields"]["amount_rub"]["value"] == 100 for r in records)
+    assert all(r["after"]["fields"]["amount_rub"]["value"] == 200 for r in records)
+
+
+def test_partial_seed_trace_skips_failed_baseline_but_never_ignores_changed_dialogue(tmp_path):
+    from scripts.audit_jev import load_initial_seeds
+
+    complete = asyncio.run(audit_cases([case()], Extractor(), Jev()))[0]
+    failed = {**complete, "case_id": "C2", "before": None, "status": "api_error"}
+    path = tmp_path / "trace.jsonl"
+    path.write_text("\n".join(json.dumps(record) for record in (complete, failed)))
+    seeds = load_initial_seeds(path, [case(), case("C2")], allow_missing=True)
+    assert list(seeds) == ["C1"]
+    changed = case("C2").model_copy(update={"messages": []})
+    with pytest.raises(ValueError, match="диалог"):
+        load_initial_seeds(path, [case(), changed], allow_missing=True)
+
+
+@pytest.mark.parametrize("timeout", [False, True])
+@pytest.mark.parametrize("partial", [False, True])
+@pytest.mark.parametrize("targeted", [False, True])
+def test_saved_seed_cli_wires_recheck_and_writes_a_separate_report(tmp_path, monkeypatch, capsys, timeout, partial, targeted):
     from types import SimpleNamespace
     from src.llm import LLMUsage
     from src.settings import LLMSettings
@@ -312,8 +495,11 @@ def test_saved_seed_cli_wires_recheck_and_writes_a_separate_report(tmp_path, mon
     original = json.dumps(source)
     trace.write_text(original)
     input_path, labels_path = tmp_path / "cases.jsonl", tmp_path / "labels.jsonl"
-    input_path.write_text(case().model_dump_json())
-    labels_path.write_text(json.dumps(label(100)))
+    selected_cases = [case(), case("C2")] if partial else [case()]
+    input_path.write_text("\n".join(item.model_dump_json() for item in selected_cases))
+    gold = label(100)
+    gold.pop("scoring_only")  # Метаданные этого теста не входят в схему документа.
+    labels_path.write_text("\n".join(json.dumps({**gold, "case_id": item.case_id}) for item in selected_cases))
 
     class SDK:
         def __init__(self, **kwargs):
@@ -327,6 +513,9 @@ def test_saved_seed_cli_wires_recheck_and_writes_a_separate_report(tmp_path, mon
         models = {"offline-test"}
         input_tokens = output_tokens = 0
         async def ainvoke(self, state, questions, response_model):
+            if timeout:
+                from typesafe_sdk import TypeSafeAPITimeoutError
+                raise TypeSafeAPITimeoutError(30)
             return response_model.model_validate({"answers": {key: {"noul": 0.01} for key in questions.root}})
 
     class NoGeneration:
@@ -338,9 +527,11 @@ def test_saved_seed_cli_wires_recheck_and_writes_a_separate_report(tmp_path, mon
         async def __aexit__(self, *args):
             pass
         async def classify(self, *args, **kwargs):
-            pytest.fail("CLI recheck must not reclassify")
+            assert partial
+            return DocumentClassification(document_type="transfer_draft", confidence=0.9, none_reason=None)
         async def extract(self, *args, **kwargs):
-            pytest.fail("CLI recheck must not regenerate an accepted seed")
+            assert partial
+            return proposal(100)
 
     settings = LLMSettings(_env_file=None, LLM_API_KEY="fake", LLM_MODEL="small")
     monkeypatch.setattr(module, "LLMSettings", lambda: settings)
@@ -350,11 +541,53 @@ def test_saved_seed_cli_wires_recheck_and_writes_a_separate_report(tmp_path, mon
     monkeypatch.setattr(module, "BudgetedExtractor", NoGeneration)
     output = tmp_path / "new-audit"
     args = build_parser().parse_args(["--live", "--input", str(input_path), "--labels", str(labels_path),
-                                     "--seed-trace", str(trace), "--output-dir", str(output)])
-    assert asyncio.run(module.run_live(args))
+                                     "--seed-trace", str(trace), "--output-dir", str(output)] +
+                                    (["--allow-missing-seeds"] if partial else []) +
+                                    (["--case-id", "C1"] if targeted else []))
+    assert asyncio.run(module.run_live(args)) is (not timeout)
     report = json.loads((output / "report.json").read_text())
-    assert report["baseline_origin"] == "saved_trace"
+    if timeout:
+        assert report["conclusion"] == "incomplete"
+        assert report["incomplete_cases"] == ["C1"]
+        checkpoints = [json.loads(line) for line in (output / "trace.jsonl").read_text().splitlines()]
+        assert checkpoints[-1]["status"] == "api_error"
+    assert report["selected_cases"] == (["C1", "C2"] if partial and not targeted else ["C1"])
+    assert report["baseline_origin"] == ("saved_and_fresh_trace" if partial and not targeted else "saved_trace")
+    assert report["saved_seed_cases"] == ["C1"]
+    assert report["fresh_seed_cases"] == (["C2"] if partial and not targeted else [])
     assert report["seed_trace_sha256"] and report["field_rules_sha256"]
-    assert report["llm_http_calls"] == 0 and report["jev_api_calls"] == 1
+    assert report["llm_http_calls"] == 0  # NoGeneration is an offline fake, not an HTTP client.
+    assert report["jev_api_calls"] == (2 if partial and not targeted and not timeout else 1)
     assert "До Jev" in capsys.readouterr().out
     assert trace.read_text() == original
+
+
+@pytest.mark.parametrize("kind", ["timeout", "connection"])
+def test_sdk_network_oserrors_are_recorded_as_api_errors(kind):
+    from typesafe_sdk import TypeSafeAPITimeoutError, TypeSafeAPIConnectionError
+
+    class UnavailableJev:
+        async def ainvoke(self, *args):
+            if kind == "timeout":
+                raise TypeSafeAPITimeoutError(30)
+            raise TypeSafeAPIConnectionError("PRIVATE_SERVER_BODY")
+
+    events = []
+    records = asyncio.run(audit_cases(
+        [case(), case("C2")], Extractor(), UnavailableJev(),
+        on_event=lambda record: events.append(json.loads(json.dumps(record))),
+    ))
+    assert len(records) == 1
+    assert records[0]["status"] == events[-1]["status"] == "api_error"
+    assert "PRIVATE_SERVER_BODY" not in json.dumps(events)
+    report = build_report(records, [label()])
+    assert report["conclusion"] == "incomplete"
+    assert report["incomplete_cases"] == ["C1"]
+
+
+def test_audit_checkpoint_oserror_still_propagates():
+    def checkpoint(record):
+        if record["before"] is not None:
+            raise OSError("disk failure")
+    with pytest.raises(OSError, match="disk failure"):
+        asyncio.run(audit_cases([case()], Extractor(), Jev(), on_event=checkpoint))
