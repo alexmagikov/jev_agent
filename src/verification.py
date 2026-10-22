@@ -1,11 +1,11 @@
-"""Jev проверяет смысл каждого поля против исходного диалога, включая пропуски."""
+"""Модель решений проверяет смысл каждого поля против диалога, включая пропуски."""
 
 from typing import Literal
 
 from pydantic import BaseModel, JsonValue, RootModel
 
 from src.cases.document_type import DocumentMessage
-from src.client import AsyncJev
+from src.client import AsyncDecisionClient
 from src.extraction import ExtractionProposal, PreparedFields, SupportedDocumentType, get_template
 from src.field_rules import (
     INVOICE_AMOUNT_RULE, INVOICE_SUBJECT_RULE, ITEM_DESCRIPTION_RULE, ITEM_QUANTITY_RULE,
@@ -15,7 +15,7 @@ from src.schemas.schemas import Probability
 
 
 class VerificationError(RuntimeError):
-    """Ошибка проверки полей через Jev: ответ не содержит ожидаемый набор проверок."""
+    """Ответ верификатора не содержит ожидаемый набор проверок."""
 
 
 class NoulQuestion(BaseModel):
@@ -131,13 +131,29 @@ def _build_verification_checks(fields: PreparedFields) -> dict[str, str]:
                 "unsupported": f"Is the value of {path} unsupported by its cited user messages?",
                 "wrong_role": f"Does {path} refer to the wrong person, item, bank, document or numerical role?",
                 "superseded": f"Was {path}'s value replaced or withdrawn by a later explicit user correction?",
+                "unresolved_alternatives": (
+                    f"Does {path} select a definite value despite multiple mutually exclusive "
+                    "alternatives that remain unresolved in the full user dialogue? Mentioning "
+                    "the selected value is not enough if the user has not chosen between alternatives. "
+                    "Apply later explicit choices and corrections before judging. Do not flag "
+                    "permitted equivalent forms, jointly requested values/items, missing information "
+                    "alone, or model uncertainty. For a scalar field with unresolved alternatives, "
+                    "use status=ambiguous, value=null and cite the unresolved alternatives. "
+                    "For items, preserve unambiguously requested items and their supported attributes; "
+                    "leave only unresolved attributes null. Use items.status=ambiguous and value=null "
+                    "only when the billed item selection itself remains unresolved. Unknown attributes "
+                    "correctly left null do not make the whole items field ambiguous."
+                ),
             }
 
             if name == "amount_rub" and "items" in type(fields).model_fields:
                 checks["ambiguous"] = (
                     f"Does {path} incorrectly claim a definite invoice total when the dialogue "
                     "leaves unit price versus line total unresolved? The presence of this number "
-                    "in a source does not establish its numerical role. If unresolved, the field "
+                    "in a source does not establish its numerical role. Apply the shared invoice-request "
+                    "convention first: a single unqualified amount attached to the invoice request "
+                    "supports the total unless context indicates otherwise; missing quantity alone "
+                    "does not make that total ambiguous. If still unresolved, the field "
                     "must have status=ambiguous, value=null and evidence of the ambiguous wording."
                 )
             if name in ("recipient_name", "basis_number"):
@@ -188,9 +204,11 @@ def _build_verification_checks(fields: PreparedFields) -> dict[str, str]:
                     "computed from the user's messages? Check each named line and the role "
                     "of its price. An explicitly assigned charge per named line can support "
                     "the sum even with unknown quantity within that line; a mere unit price "
-                    "with unknown quantity cannot, except for the explicit finite named-goods "
-                    "enumeration convention in the shared rule above. Apply that convention "
-                    "to a price stated for each named good; do not require invented quantity=1. "
+                    "with unknown quantity cannot. For goods, 'по ... рублей каждый' gives "
+                    "unit prices, not whole-line charges. Without a separately stated total, "
+                    "missing is correct if any active line lacks both a whole-line charge "
+                    "and enough data to calculate it. Never sum unit prices once per product name "
+                    "or treat a known subtotal as the invoice total. "
                     "A computed total need not appear verbatim "
                     "in the source. Do not flag if the total requires invented quantities "
                     "or leaves the scope of a charge unresolved."
@@ -286,8 +304,9 @@ def build_verification_questions(
             instructions={"field": claim, "rules": [part for part in
                           (_FIELD_RULES.get(name), item_rules, semantic_rule) if part]},
             criteria={"true": question, "false": (
-                "The specified error is absent. The value/status is supported, including permitted "
-                "normalization and calculations; a null attribute is correct when not uniquely supported."
+                "The specific error described in criteria.true is absent. "
+                "This does not imply that the value or status is otherwise correct or supported. "
+                "Other kinds of errors do not make criteria.true true for this question."
             )},
         )
     return VerificationQuestions(questions)
@@ -298,7 +317,7 @@ async def verify_fields(
     document_type: SupportedDocumentType,
     proposal: ExtractionProposal,
     fields: PreparedFields,
-    client: AsyncJev,
+    client: AsyncDecisionClient,
     wrong_threshold: float = 0.7,
     *,
     debug: bool = False,
@@ -318,16 +337,16 @@ async def verify_fields(
     )
 
     if set(response.answers) != set(questions.root):
-        raise VerificationError("Jev вернул неполный или неожиданный набор проверок")
+        raise VerificationError(f"{getattr(client, 'name', 'Jev')} вернул неполный или неожиданный набор проверок")
 
     if debug:
-        print(f"Jev: вероятности ошибок, порог={wrong_threshold:.2f}:", flush=True)
+        print(f"{getattr(client, 'name', 'Jev')}: оценки ошибок, порог={wrong_threshold:.2f}:", flush=True)
         for key, answer in response.answers.items():
             print(f"  {key}: {answer.noul:.3f}", flush=True)
 
     checks = _build_verification_checks(fields)
     return [
-        f"{key}: Jev обнаружил возможную ошибку ({answer.noul:.2f}). "
+        f"{key}: {getattr(client, 'name', 'Jev')} обнаружил возможную ошибку ({answer.noul:.2f}). "
         + checks[key]
         for key, answer in response.answers.items()
         if answer.noul >= wrong_threshold

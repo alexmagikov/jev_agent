@@ -9,14 +9,14 @@ from typing import Literal
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from src.cases.document_type import DocumentMessage
-from src.client import AsyncJev, JevUsage
+from src.client import AsyncCLM, AsyncDecisionClient, AsyncJeff, AsyncJev, JevUsage
 from src.schemas.document_schemas import DocumentResult
 from src.extraction import validate_messages
 from src.llm import AsyncLLMExtractor, LLMUsage
 from src.metrics import FieldMetrics, MetricsReport, calculate_metrics
 from src.pipeline import PipelineError, PipelineRateLimitError, classify_document, process_document
 from src.schemas.schemas import DocumentType, SplitFilter, DataSplit, Probability
-from src.settings import JevClientSettings, LLMSettings, PipelineSettings
+from src.settings import CLMSettings, JeffSettings, JevClientSettings, LLMSettings, PipelineSettings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LABEL_ADAPTER = TypeAdapter(DocumentResult)
@@ -146,9 +146,9 @@ def write_errors(errors: list[dict[str, str]], path: Path) -> None:
 
 async def classify_cases(
     cases: list[InputCase],
-    client: AsyncJev,
+    client: AsyncDecisionClient,
 ) -> list[DocumentTypeResult]:
-    """Последовательно классифицирует диалоги через JEV."""
+    """Последовательно классифицирует диалоги выбранной моделью решений."""
 
     results: list[DocumentTypeResult] = []
     for case in cases:
@@ -250,18 +250,20 @@ def print_llm_usage(usage: LLMUsage) -> None:
     print(f"  Оценка стоимости по usage и заданным тарифам: {cost}")
 
 
-def print_jev_usage(usage: JevUsage | None) -> None:
+def print_jev_usage(usage: JevUsage | None, *, name: str = "Jev") -> None:
     if usage is None:
-        print("Jev: статистика SDK н/д")
+        print(f"{name}: статистика SDK н/д")
     else:
-        print(f"Jev: вызовов SDK={usage.sdk_calls}, ответов={usage.responses}, время={usage.elapsed_seconds:.2f} с")
+        print(f"{name}: вызовов SDK={usage.sdk_calls}, ответов={usage.responses}, время={usage.elapsed_seconds:.2f} с")
         print("  Внутренние HTTP-повторы SDK отдельно не измеряются.")
         if usage.usage_reports:
-            print(f"  Токены Jev: вход={usage.input_tokens}, выход={usage.output_tokens}; "
+            print(f"  Токены {name}: вход={usage.input_tokens}, выход={usage.output_tokens}; "
                   f"usage получен для {usage.usage_reports}/{usage.responses} ответов")
         else:
-            print("  Токены Jev: н/д (нет полного usage)")
-    print("  Стоимость Jev не включена в оценку стоимости LLM.")
+            print(f"  Токены {name}: н/д (нет полного usage)")
+    print(f"  Стоимость {name} не включена в оценку стоимости LLM.")
+    if name == "CLM":
+        print("  Usage CLM считает токены кодировщика на промахах кеша, не полный текст HTTP-запроса.")
 
 
 async def main(
@@ -273,9 +275,12 @@ async def main(
     limit: int | None = None,
     debug: bool = False,
     fail_fast: bool = False,
+    verifier: Literal["jeff", "clm", "jev"] = "jeff",
 ) -> None:
     if mode not in ("classification", "full", "llm-only"):
         raise ValueError("Неизвестный режим обработки")
+    if verifier not in ("jeff", "clm", "jev"):
+        raise ValueError("Неизвестная модель проверки")
     if limit is not None and limit < 1:
         raise ValueError("--limit должен быть положительным")
     
@@ -300,22 +305,35 @@ async def main(
         raise ValueError("В выбранной выборке нет кейсов")
     
     labels = load_labels(labels_path, {case.case_id for case in cases})
+    
     run_started = perf_counter()
     stopped_error: PipelineError | None = None
     client = None
+    verifier_name = {"jeff": "Jeff", "clm": "CLM", "jev": "Jev"}[verifier]
+    decision_settings = None
     if mode != "llm-only":
-        settings = JevClientSettings()
-        client = AsyncJev(api_key=settings.api_key.get_secret_value())
+        if verifier == "jeff":
+            decision_settings = JeffSettings()
+            client = AsyncJeff(decision_settings)
+        elif verifier == "clm":
+            decision_settings = CLMSettings()
+            client = AsyncCLM(decision_settings)
+        else:
+            settings = JevClientSettings()
+            client = AsyncJev(api_key=settings.api_key.get_secret_value())
 
     if document_mode:
         pipeline_settings = PipelineSettings()
+        wrong_threshold = decision_settings.wrong_threshold if decision_settings else pipeline_settings.wrong_threshold
         results = []
         errors: list[dict[str, str]] = []
         labels_by_id = {label["case_id"]: label for label in labels}
         if mode == "llm-only":
-            print("Режим llm-only: классификация LLM → извлечение LLM → Python; без проверок Jev.", flush=True)
+            print("Режим llm-only: классификация LLM → извлечение LLM → Python; без внешнего верификатора.", flush=True)
         else:
-            print("Режим full: классификация Jev → извлечение LLM → Python → проверка Jev → ограниченный ремонт.", flush=True)
+            print(f"Режим full: классификация {verifier_name} → извлечение LLM → Python → проверка {verifier_name} → ограниченный ремонт.", flush=True)
+            if verifier in ("clm", "jeff"):
+                print(f"{verifier_name}: порог={wrong_threshold:g}; калибровка вероятности ошибки на наших данных не подтверждена.", flush=True)
         if debug:
             print("DEBUG: ответы модели и эталоны могут содержать реквизиты; не публикуйте вывод.", flush=True)
         async with AsyncLLMExtractor(LLMSettings(), debug=debug) as extractor:
@@ -330,7 +348,7 @@ async def main(
                         result = await process_document(
                             case.case_id, case.messages, client, extractor,
                             max_attempts=pipeline_settings.max_attempts,
-                            wrong_threshold=pipeline_settings.wrong_threshold,
+                            wrong_threshold=wrong_threshold,
                             debug=debug,
                             use_jev=mode == "full",
                         )
@@ -353,7 +371,7 @@ async def main(
             finally:
                 print_llm_usage(extractor.usage)
                 if client is not None:
-                    print_jev_usage(getattr(client, "usage", None))
+                    print_jev_usage(getattr(client, "usage", None), name=verifier_name)
                 print(f"Полное время прогона ({mode}): {perf_counter() - run_started:.2f} с", flush=True)
     else:
         results = await classify_cases(cases, client)
@@ -388,7 +406,7 @@ async def main(
 
 def build_parser() -> ArgumentParser:
     parser = ArgumentParser(
-        description="Обработка документов с Jev (full) или без Jev (llm-only)."
+        description="Обработка документов с Jeff/CLM/Jev (full) или только LLM (llm-only)."
     )
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT_PATH)
     parser.add_argument("--output", type=Path, default=None,
@@ -396,6 +414,8 @@ def build_parser() -> ArgumentParser:
                              "или predictions.llm-only.jsonl (llm-only).")
     parser.add_argument("--labels", type=Path, default=DEFAULT_LABELS_PATH)
     parser.add_argument("--mode", choices=("classification", "full", "llm-only"), default="classification")
+    parser.add_argument("--verifier", choices=("jeff", "clm", "jev"), default="jeff",
+                        help="Классификатор и верификатор; по умолчанию собственный Jeff API.")
     parser.add_argument("--limit", type=int, help="Обработать только первые N кейсов выбранной выборки.")
     parser.add_argument(
         "--debug", action="store_true",
@@ -428,6 +448,7 @@ if __name__ == "__main__":
                 limit=arguments.limit,
                 debug=arguments.debug,
                 fail_fast=arguments.fail_fast,
+                verifier=arguments.verifier,
             )
         )
     except ValidationError as error:

@@ -11,6 +11,52 @@ class JevClientSettings(BaseSettings):
     api_key: SecretStr = Field(validation_alias="JEV_API_KEY")
 
 
+class JeffSettings(BaseSettings):
+    """Подключение к jeff-serve; не связано с ключами Jev или CLM."""
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    base_url: str = Field(default="http://127.0.0.1:8765", validation_alias="JEFF_BASE_URL")
+    model: str = Field(default="jeff-latest", min_length=1, validation_alias="JEFF_MODEL")
+    api_key: SecretStr | None = Field(default=None, min_length=1, validation_alias="JEFF_API_KEY")
+    timeout_seconds: float = Field(default=120, gt=0, le=600, validation_alias="JEFF_TIMEOUT_SECONDS")
+    max_retries: int = Field(default=0, ge=0, le=5, validation_alias="JEFF_MAX_RETRIES")
+    wrong_threshold: float = Field(default=0.7, gt=0, lt=1, validation_alias="JEFF_WRONG_THRESHOLD")
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        url = urlsplit(value)
+        local_http = url.scheme == "http" and url.hostname in ("localhost", "127.0.0.1", "::1")
+        if (not url.hostname or (url.scheme != "https" and not local_http)
+                or url.username or url.password or url.query or url.fragment):
+            raise ValueError("JEFF_BASE_URL: нужен HTTPS либо HTTP localhost, без credentials/query/fragment")
+        return value.rstrip("/")
+
+
+class CLMSettings(BaseSettings):
+    """Подключение к собственному clm-serve, отдельно от генеративной LLM."""
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    base_url: str = Field(default="http://127.0.0.1:8700", validation_alias="CLM_BASE_URL")
+    model: str = Field(default="clm-latest", min_length=1, validation_alias="CLM_MODEL")
+    api_key: SecretStr | None = Field(default=None, min_length=1, validation_alias="CLM_API_KEY")
+    timeout_seconds: float = Field(default=120, gt=0, le=600, validation_alias="CLM_TIMEOUT_SECONDS")
+    max_retries: int = Field(default=0, ge=0, le=5, validation_alias="CLM_MAX_RETRIES")
+    wrong_threshold: float = Field(default=0.7, gt=0, lt=1, validation_alias="CLM_WRONG_THRESHOLD")
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        url = urlsplit(value)
+        local_http = url.scheme == "http" and url.hostname in ("localhost", "127.0.0.1", "::1")
+        if (not url.hostname or (url.scheme != "https" and not local_http)
+                or url.username or url.password or url.query or url.fragment):
+            raise ValueError("CLM_BASE_URL: нужен HTTPS либо HTTP localhost, без credentials/query/fragment")
+        return value.rstrip("/")
+
+
 class LLMSettings(BaseSettings):
     """Настройки полного режима. Имя модели выбирается явно, а не скрытым default."""
 
