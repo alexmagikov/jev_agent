@@ -17,11 +17,20 @@ TRANSFER_ALIAS_RULES = {
 }
 
 ITEMS_PRESENCE_RULE = (
-    "Named billed goods/services require one line each and items.status=fillable. An item with "
+    "Selected billed goods/services require one line each and items.status=fillable. An item with "
     "only a supported description is fillable. Known attributes need user evidence or an "
     "unambiguous calculation; leave all other attributes null. Missing attributes do not make "
     "items missing/ambiguous. Do not create an item from only a total amount, a recipient name or "
     "a contract reference. Without billed goods/services or other item data, items is missing."
+)
+
+ITEMS_SELECTION_RULE = (
+    "Only unambiguously selected goods/services are active billed items. "
+    "For 'стол и либо стул, либо кресло — ещё решу', keep only стол; "
+    "unchosen alternatives are not omitted active items. If none are selected, "
+    "the expected items state is status=ambiguous, value=null with evidence. "
+    "For selected items with unresolved attributes, keep status=fillable and only those "
+    "attributes null. Later explicit choices/corrections resolve the alternatives."
 )
 
 ITEMS_EXAMPLES = (
