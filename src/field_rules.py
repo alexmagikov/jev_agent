@@ -16,82 +16,104 @@ TRANSFER_ALIAS_RULES = {
     for (document_type, name), groups in PERMITTED_ALIASES.items()
 }
 
-ITEM_DESCRIPTION_RULE = (
-    "Normalize an ordinary item description to singular nominative when the conversion "
-    "is unambiguous, even when quantity is greater than one or unknown. Keep the actual "
-    "quantity in quantity; grammatical singular does not mean quantity=1. Preserve "
-    "characteristics, composition and meaning. Do not change names in quotation marks, "
-    "established product names, plural-only nouns (such as ножницы), or wording whose "
-    "singular form changes the meaning or is ambiguous. For a quoted item name, preserve "
-    "the text inside exactly, but omit outer quotation delimiters used only to mark that "
-    "name in the source. Do not remove quotation marks embedded within the actual name. "
-    "This normalization applies only "
-    "to items.value[i].description, not to subject, company names or evidence quotes."
+ITEMS_PRESENCE_RULE = (
+    "Named billed goods/services require one line each and items.status=fillable. An item with "
+    "only a supported description is fillable. Known attributes need user evidence or an "
+    "unambiguous calculation; leave all other attributes null. Missing attributes do not make "
+    "items missing/ambiguous. Do not create an item from only a total amount, a recipient name or "
+    "a contract reference. Without billed goods/services or other item data, items is missing."
 )
 
-ENUMERATED_ITEM_CHARGES_RULE = (
-    "Task convention for an explicit finite list of named billed goods: wording such as "
-    "'товары А и Б, по ... рублей каждый' assigns that charge to each named bill line. "
-    "Sum the charge once for each listed line even with unknown quantities. This is a "
-    "calculable invoice total, not missing or ambiguous merely because quantity is null. "
-    "Do not infer quantity=1 or any unstated measurement unit. A common quoted price may "
-    "be reused in the expression (fee + fee for two lines), without inventing a numeric "
-    "operand for the number of lines. This convention does not apply to explicit prices "
-    "per measurement unit (за килограмм, за литр, за метр) with unknown quantities, open "
-    "lists, alternative rather than jointly billed goods, or unresolved charge allocation. "
-    "When actual quantities are explicitly supplied, respect them and the stated price "
-    "role; do not replace quantity-times-unit-price with one charge per line."
+ITEMS_EXAMPLES = (
+    "Examples only, not actual input. 'Выставь счёт за консультацию': description=консультация, "
+    "other attributes null. 'Счёт на 5000 рублей': amount_rub=5000, items missing. 'Счёт за "
+    "консультационные услуги на 5000 рублей': description=консультационная услуга, "
+    "subject=консультационные услуги, amount_rub=5000; other item attributes null. 'Абрикосы: 100 "
+    "рублей за 5 штук': quantity=5, unit=штук, unit_price_rub=100/5. 'Стулья: по 3 штуки для каждого из 4 "
+    "кабинетов, всего 12000 рублей': quantity=3*4, unit_price_rub=12000/(3*4). 'Яблоки и груши: всего 5 "
+    "штук на 100 рублей': amount_rub=100; two lines яблоко/груша, each unit=штук and "
+    "quantity/unit_price_rub/calculations=null; subject missing. Do not allocate the combined count or "
+    "total between these goods."
+)
+
+RECIPIENT_NAME_RULE = (
+    "Use nominative case for a person name only when unambiguous. Preserve "
+    "company names, quoted text and name components; invent none."
+)
+
+BASIS_NUMBER_RULE = (
+    "Copy the identifier without № or labels договор/номер; preserve zeros, letters, slashes and "
+    "hyphens."
+)
+
+VAT_MODE_RULE = (
+    "Distinguish no_vat from a stated 0% rate. 'Без НДС' means vat_mode='no_vat' and "
+    "vat_rate_percent is missing; 'НДС 0%' means vat_mode='rate' and vat_rate_percent=0. A rate "
+    "alone does not authorize adding VAT to the total."
+)
+
+VAT_RATE_RULE = (
+    "Only an explicitly stated percentage supports a VAT rate; do not derive it from tax and "
+    "base amounts. If no rate is stated, vat_rate_percent is missing. For this field "
+    "calculation=null."
+)
+
+ITEM_DESCRIPTION_RULE = (
+    "For items.value[i].description only, normalize ordinary names to singular nominative when "
+    "unambiguous; this does not imply quantity=1. Preserve meaning and characteristics. Keep "
+    "established product names, names in quotation marks, plural-only nouns (ножницы), and "
+    "ambiguous or meaning-changing forms unchanged. For quoted names, omit only outer quotation "
+    "delimiters; preserve inside text and embedded quotes exactly. Do not normalize subject or "
+    "evidence."
+)
+
+LINE_CHARGES_RULE = (
+    "For goods, 'по ... рублей каждый' and 'за килограмм/литр/метр' give unit prices, not line "
+    "totals. Without a stated invoice total, sum only when every active line has an explicit "
+    "whole-line fee or known quantity*unit_price. Unknown quantities mean amount missing/null, not "
+    "a partial sum; unclear price scope means ambiguous/null. Never infer quantity=1 from line "
+    "count. Explicit batch/work fees override unit-price interpretation and may be summed without "
+    "quantity or inventing unit prices (shared fee for two lines: fee + fee). Example: "
+    "apples/pears at 100 each, apples=2, pears unknown: total missing; pears=3 gives 500. Entire "
+    "apple batch=100 and pear batch=150 gives 250; two entire batches at 100 gives 200."
 )
 
 INVOICE_AMOUNT_RULE = (
-    "amount_rub is the invoice total, not any number accompanied by рублей. "
-    "Resolve the numerical role from the entire dialogue. A bare countable-goods name "
-    "followed by a price, without a quantity or a total/unit-price cue, leaves unit price "
-    "versus line total unresolved: use status=ambiguous, value=null and cite that wording. "
-    "An explicit invoice total (счёт на ... рублей, услуга на ... рублей, на сумму, всего, "
-    "итого, общей стоимостью) supports the total; "
-    "a stated unit price (по, за единицу) and known quantity support a calculated total. "
-    "Do not mark an explicit total ambiguous just because quantity is missing. "
-    "A stated fee for named work/service can be the total fee for that work without a "
-    "quantity; this does not imply quantity=1 or a unit price. Distinguish a work fee "
-    "from a per-session/per-hour price using the user's wording. "
-    + ENUMERATED_ITEM_CHARGES_RULE + " "
-    "A VAT percentage alone does not authorize adding tax."
+    "amount_rub is the invoice total. A single unqualified amount attached to an invoice request "
+    "is its total unless context says unit price, partial charge or alternatives: 'Выставь счёт за "
+    "стулья, 5000 рублей' and '...на 5000 рублей' both mean total=5000. An explicit total "
+    "(всего/итого/на сумму) stays known without quantity; infer no item attributes. Unit-price "
+    "cues take precedence: 'стулья по 5000 рублей' leaves total missing without quantity. Outside "
+    "this convention, unresolved unit-price versus line-total wording means ambiguous/null with "
+    "evidence. Distinguish a service's whole fee from per-hour/session prices. "
+    + LINE_CHARGES_RULE + " A VAT percentage alone does not authorize adding tax."
 )
 
 INVOICE_SUBJECT_RULE = (
-    "A single explicitly named billed goods/service category supports subject as well as "
-    "the item's description. Missing quantity or an ambiguous price does not erase that "
-    "known subject. Do not require a separate purpose sentence for a single named category. "
-    "For several different named goods, do not invent an umbrella purpose by concatenating them."
+    "Subject and items are not mutually exclusive. One named billed category supports both subject "
+    "and item description, even without quantity or a definite price; no separate purpose sentence "
+    "is needed. For several different goods, use an explicitly stated common purpose; do not "
+    "invent one by concatenating names."
 )
 
 ITEM_UNIT_RULE = (
-    "unit is an explicitly supplied measurement or packaging unit, such as штук, кг, часов "
-    "or коробок. A counted goods/service noun is not itself a measurement unit: in a "
-    "quantity plus service-name phrase, keep the known quantity and description but "
-    "leave unit=null unless a separate unit is supplied. Do not manufacture a unit from "
-    "the description."
+    "unit must be an explicit measurement/packaging unit (штук, кг, часов, коробок). A counted "
+    "goods/service noun is not a unit: preserve its quantity but leave unit=null unless a separate "
+    "unit is stated."
 )
 
 ITEM_QUANTITY_RULE = (
-    "quantity describes this single line item only. Use an explicitly supplied count "
-    "or an unambiguous calculation from source numbers that belong to this item. "
-    "Do not invent quantity=1 from the existence of an item, its name, a work fee, "
-    "or a total alone. The number of named bill lines is not the physical quantity "
-    "of each line. If the source does not determine the quantity, null is correct."
+    "quantity is the stated or unambiguously calculated count for this line only. Never infer "
+    "quantity=1 from a name, fee or total; the number of named lines is not quantity. If "
+    "unsupported, null is correct."
 )
 
 ITEM_UNIT_PRICE_RULE = (
-    "unit_price_rub describes the price of one unit of this single line item. "
-    "An explicitly stated unit price remains known even with unknown quantity; "
-    "quantity=null alone is not a reason to discard that price. A price stated "
-    "for each explicitly named good ('по ... рублей каждый') supports its unit price "
-    "without inferring quantity=1. A work fee or line total alone does not establish "
-    "a unit price. A line total and positive quantity for this same line support "
-    "total/count unless different unit prices within the line are indicated. "
-    "Do not use a combined total/count across different goods or invent an allocation. "
-    "If no direct unit price or unambiguous same-line calculation is supported, null is correct."
+    "unit_price_rub is one unit's price for this line. A stated price ('по ... рублей каждый') "
+    "remains known with unknown quantity; never infer quantity=1. An entire batch or work fee "
+    "alone is not a unit price. A same-line total and positive count support total/count; assume "
+    "one unit price unless different prices are stated. Preserve differently priced lines; never "
+    "average across them or allocate a shared total. Otherwise null is correct."
 )
 
 
