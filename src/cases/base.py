@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 
-from src.client import AsyncJev
+from src.client import DecisionModelClient
 
 
 class Case[StateT: BaseModel, QuestionsT: BaseModel, ResponseT: BaseModel](BaseModel):
@@ -13,5 +13,5 @@ class Case[StateT: BaseModel, QuestionsT: BaseModel, ResponseT: BaseModel](BaseM
     questions: QuestionsT
     response_model: type[ResponseT]
 
-    async def run(self, client: AsyncJev) -> ResponseT:
+    async def run(self, client: DecisionModelClient) -> ResponseT:
         return await client.ainvoke(self.state, self.questions, self.response_model)
