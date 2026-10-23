@@ -46,7 +46,7 @@ def get_proposal_model(document_type: SupportedDocumentType) -> type[BaseModel]:
 
 
 def get_proposal_schema(document_type: SupportedDocumentType, *, field_names: list[str] | None = None) -> dict:
-    """Закрытая JSON Schema; nullable-ключи тоже явно обязательны для strict-режима."""
+    """Создаёт JSON-схему ответа, который должна вернуть LLM. Схема описывает допустимые поля, их типы и обязательность."""
     schema = get_proposal_model(document_type).model_json_schema()
     if field_names is not None:
         # При ремонте сервер должен генерировать только отмеченные поля.
@@ -71,14 +71,11 @@ def get_proposal_schema(document_type: SupportedDocumentType, *, field_names: li
     return schema
 
 
-@lru_cache(maxsize=1)
-def _templates() -> dict:
-    path = Path(__file__).resolve().parents[1] / "data" / "form_templates.json"
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
+@lru_cache(maxsize=2)
 def get_template(document_type: SupportedDocumentType) -> dict:
-    return _templates()[document_type]
+    """Загружает шаблон документа; кеширует результат отдельно для счёта и перевода."""
+    path = Path(__file__).resolve().parents[1] / "data" / "form_templates.json"
+    return json.loads(path.read_text(encoding="utf-8"))[document_type]
 
 
 def validate_messages(messages: list[DocumentMessage]) -> None:
@@ -94,16 +91,59 @@ def message_index(messages: list[DocumentMessage]) -> dict[str, DocumentMessage]
     return indexed
 
 
-def _check_source(source: SourceQuote, indexed: dict[str, DocumentMessage]) -> None:
+def _check_source(source: SourceQuote, indexed: dict[str, DocumentMessage], *, path: str) -> None:
+    """Путь состоит из имён полей схемы и индексов, без цитат или модельных ID в ошибке."""
     message = indexed.get(source.message_id)
+
     if message is None or message.role != "user":
-        raise ExtractionError("Источник должен ссылаться на существующую реплику user", code="invalid_source")
+        raise ExtractionError(
+            f"{path}.message_id: Источник должен ссылаться на существующую реплику user",
+            code="invalid_source",
+        )
+    
     if not source.quote.strip() or source.quote not in message.text:
-        raise ExtractionError("Цитата источника отсутствует в указанной реплике", code="invalid_source")
+        raise ExtractionError(
+            f"{path}.quote: Цитата источника отсутствует в указанной реплике. "
+            "Скопируй дословный фрагмент исходного messages[message_id].text; "
+            "не меняй кавычки, пробелы и пунктуацию.",
+            code="invalid_source",
+        )
+
+
+def _has_whole_numeric_source(
+    value: str,
+    sources: list[SourceQuote],
+    indexed: dict[str, DocumentMessage],
+) -> bool:
+    """Номер целиком входит в цитату и не обрезан относительно исходного сообщения."""
+    if not value:
+        return False
+    
+    pattern = re.compile(rf"(?<!\d){re.escape(value)}(?!\d)")
+    for source in sources:
+        text = indexed[source.message_id].text
+        for quote_match in re.finditer(re.escape(source.quote), text):
+            # Не ограничиваем поиск концом цитаты: lookahead должен видеть
+            # следующую цифру в исходном тексте, даже если цитата обрезана.
+            value_match = pattern.search(text, quote_match.start())
+            if value_match is not None and value_match.end() <= quote_match.end():
+                return True
+    return False
 
 
 _NUMBER = r"[+-]?(?:\d{1,3}(?:[ \u00a0\u202f]\d{3})+|\d+)(?:[.,]\d+)?"
-_NUMBERS = re.compile(rf"(?<![\w]){_NUMBER}(?![\w])")
+# Число может примыкать к известной единице, но не к произвольному слову/артикулу.
+_ATTACHED_UNIT = (
+    r"(?:руб(?:лей|ля|ль)?|р|коп(?:еек|ейки|ейку|ейка)?|шт(?:ук(?:а|и|у)?)?|"
+    r"кг|гр|мг|г|т|мл|л|км|см|мм|м[²³23]?|ч(?:ас(?:а|ов)?)?|мин|сек|"
+    r"уп(?:ак(?:ов(?:ка|ки|ок))?)?|короб(?:ка|ки|ок)|комплект(?:а|ов)?)"
+)
+_NUMBERS = re.compile(
+    rf"(?<!\w)(?<!\d[.,]){_NUMBER}"
+    # При неудачном полном совпадении нельзя принять начало дроби или группы тысяч.
+    rf"(?:(?!\w|[.,]\d|[ \u00a0\u202f]\d{{3}}(?!\d))|(?={_ATTACHED_UNIT}(?!\w)))",
+    re.IGNORECASE,
+)
 _RUB_KOP = re.compile(
     rf"({_NUMBER})\s*(?:рублей|рубля|рубль|руб\.?)\s*"
     r"(\d{1,2})\s*(?:копеек|копейки|копейку|копейка|коп\.?)", re.IGNORECASE,
@@ -134,10 +174,12 @@ def _numbers_in(quotes: list[str]) -> set[Decimal]:
     return numbers
 
 
-def _calculate(plan: Calculation, indexed: dict[str, DocumentMessage], target: str) -> tuple[float, str]:
+def _calculate(
+    plan: Calculation, indexed: dict[str, DocumentMessage], target: str, *, source_path: str,
+) -> tuple[float, str]:
     values: dict[str, Decimal] = {}
-    for operand in plan.operands:
-        _check_source(operand.source, indexed)
+    for index, operand in enumerate(plan.operands):
+        _check_source(operand.source, indexed, path=f"{source_path}.operands[{index}].source")
 
         if not any(
             match.group() == operand.source.quote.strip()
@@ -188,17 +230,19 @@ def _calculate(plan: Calculation, indexed: dict[str, DocumentMessage], target: s
     return numeric, f"{target} = {plan.expression}; {operands}; result={value}"
 
 
+_REQUISITE_FORMATS = {
+    "recipient_inn": (r"(?:[0-9]{10}|[0-9]{12})", "Exactly 10 or 12 ASCII digits."),
+    "recipient_account": (r"[0-9]{20}", "Exactly 20 ASCII digits."),
+    "recipient_bik": (r"[0-9]{9}", "Exactly 9 ASCII digits."),
+    "recipient_email": (r"[^\s@]+@[^\s@]+\.[^\s@]+", "Nonempty local@domain.suffix, no whitespace or extra @."),
+}
+
+
 def _invalid_format(name: str, value: object) -> bool:
     """Возвращает True, если некорректный формат"""
-    patterns = {
-        "recipient_inn": r"(?:[0-9]{10}|[0-9]{12})",
-        "recipient_account": r"[0-9]{20}",
-        "recipient_bik": r"[0-9]{9}",
-        "recipient_email": r"[^\s@]+@[^\s@]+\.[^\s@]+",
-    }
-    
-    if name in patterns:
-        return not isinstance(value, str) or re.fullmatch(patterns[name], value) is None
+    if name in _REQUISITE_FORMATS:
+        pattern, _ = _REQUISITE_FORMATS[name]
+        return not isinstance(value, str) or re.fullmatch(pattern, value) is None
     if name == "basis_date":
         try:
             return not isinstance(value, str) or date.fromisoformat(value).isoformat() != value
@@ -209,6 +253,49 @@ def _invalid_format(name: str, value: object) -> bool:
     if name == "vat_rate_percent":
         return not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 100
     return False
+
+
+def requisite_format_context(name: str, value: object = None) -> dict | None:
+    """Факт проверки формы исходного значения, не вердикт о его смысле/актуальности.
+
+    При null остаётся только правило: по цитате не угадываем, какое число
+    относится к полю, и не утверждаем, что Python уже проверил invalid/null.
+    """
+    if name not in _REQUISITE_FORMATS:
+        return None
+    
+    context = {"rule": _REQUISITE_FORMATS[name][1]}
+    if value is not None:
+        context.update(checked_by="python", input_value=value,
+                       matches_format=not _invalid_format(name, value))
+        if isinstance(value, str):
+            context["input_length"] = len(value)
+    return context
+
+
+def requisite_source_candidates(name: str, messages: list[DocumentMessage]) -> list[dict] | None:
+    """Только строки допустимого формата; принадлежность и актуальность решает Jev.
+
+    Не извлекаем короткое число из более длинного и не используем реплики
+    ассистента. None означает поле без поддерживаемого здесь валидатора.
+    """
+    if name not in _REQUISITE_FORMATS:
+        return None
+    pattern = _REQUISITE_FORMATS[name][0]
+    if name != "recipient_email":
+        pattern = rf"(?<!\d){pattern}(?!\d)"
+    candidates = []
+    seen = set()
+    for message in messages:
+        if message.role != "user":
+            continue
+        for match in re.finditer(pattern, message.text):
+            value = match.group()
+            identity = (message.id, value)
+            if identity not in seen and not _invalid_format(name, value):
+                candidates.append({"message_id": message.id, "quote": value})
+                seen.add(identity)
+    return candidates
 
 
 def prepare_fields(
@@ -226,11 +313,11 @@ def prepare_fields(
     fields: dict[str, dict] = {}
     calculated: set[str] = set()
 
-    def apply_calculation(plan: Calculation, target: str, checked_field: dict) -> float:
+    def apply_calculation(plan: Calculation, target: str, checked_field: dict, *, source_path: str) -> float:
         if len(calculated) >= 32:
             raise ExtractionError("Допустимо не больше 32 вычислений на предложение")
         
-        value, formula = _calculate(plan, indexed, target)
+        value, formula = _calculate(plan, indexed, target, source_path=source_path)
         checked_field["derivation"] = "; ".join(filter(None, [checked_field["derivation"], formula]))
         checked_field["evidence"] = list(dict.fromkeys([
             *checked_field["evidence"], *(operand.source.message_id for operand in plan.operands),
@@ -239,8 +326,8 @@ def prepare_fields(
         return value
 
     for name, field in proposal.fields.items():
-        for source in field.evidence:
-            _check_source(source, indexed)
+        for index, source in enumerate(field.evidence):
+            _check_source(source, indexed, path=f"{name}.evidence[{index}]")
         if field.status != "fillable" and field.value is not None:
             raise ExtractionError(f"{name}: незаполняемое поле должно иметь value=null")
         if field.status in ("fillable", "invalid", "ambiguous") and not field.evidence:
@@ -263,20 +350,24 @@ def prepare_fields(
             if field.value is not None:
                 raise ExtractionError(f"{name}: при calculation значение должно быть null", code="conflicting_calculation_value")
             
-            checked_field["value"] = apply_calculation(field.calculation, name, checked_field)
+            checked_field["value"] = apply_calculation(
+                field.calculation, name, checked_field, source_path=f"{name}.calculation",
+            )
 
         if name == "items" and isinstance(field.value, list):
             for index, item in enumerate(field.value):
-                for key, plan in (
-                    ("quantity", item.quantity_calculation),
-                    ("unit_price_rub", item.unit_price_calculation),
+                for key, plan_name, plan in (
+                    ("quantity", "quantity_calculation", item.quantity_calculation),
+                    ("unit_price_rub", "unit_price_calculation", item.unit_price_calculation),
                 ):
                     if plan is None:
                         continue
                     target = f"items[{index}].{key}"
                     if getattr(item, key) is not None:
                         raise ExtractionError(f"{target}: при расчёте значение должно быть null", code="conflicting_calculation_value")
-                    checked_field["value"][index][key] = apply_calculation(plan, target, checked_field)
+                    checked_field["value"][index][key] = apply_calculation(
+                        plan, target, checked_field, source_path=f"items[{index}].{plan_name}",
+                    )
         fields[name] = checked_field
 
     exact_fields = {
@@ -294,6 +385,16 @@ def prepare_fields(
             raise ExtractionError(f"{name}: у заполняемого поля нет значения или расчёта", code="missing_value")
         if name in exact_fields and (not isinstance(value, str) or not any(value in q for q in quotes)):
             raise ExtractionError(f"{name}: реквизит должен дословно присутствовать в источнике")
+        if name in {"recipient_inn", "recipient_account", "recipient_bik"} and not _has_whole_numeric_source(
+            value, proposal.fields[name].evidence, indexed,
+        ):
+            raise ExtractionError(
+                f"{name}: скопируй цифровой реквизит целиком из исходного сообщения; "
+                "нельзя обрезать цифры в значении или цитате ради нужной длины. "
+                "Если исходный реквизит неверного формата, используй invalid, value=null "
+                "и дословную цитату проблемного реквизита.",
+                code="invalid_source",
+            )
         
         numbers: set[Decimal] = set()
         for source in proposal.fields[name].evidence:
