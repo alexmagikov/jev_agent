@@ -1,0 +1,93 @@
+{
+  "version": "jev-v1",
+  "created_at_utc": "2026-10-23T18:05:49.916124+00:00",
+  "scope": "classification and field verification prompts; no LLM extraction prompt",
+  "dependencies": {
+    "pydantic": "2.13.5",
+    "typesafe-sdk": "0.7.2"
+  },
+  "sources": [
+    {
+      "source": "src/verification.py",
+      "snapshot": "verification.py.txt",
+      "sha256": "f02337934c603238ae8f6bb568317af6151a14770996b8bbbb9e219e9d1bca4c"
+    },
+    {
+      "source": "src/field_rules.py",
+      "snapshot": "field_rules.py.txt",
+      "sha256": "5320445c9d5eaa9dcf10428daf3970170d00a29984fd4ad8f25f32e18ae79846"
+    },
+    {
+      "source": "src/cases/document_type.py",
+      "snapshot": "document_type.py.txt",
+      "sha256": "78202fbbb7bcdbe1ff4efc72ac5590b6c477f8d043b1ee12a0d1c8c0898fde1d"
+    },
+    {
+      "source": "data/form_templates.json",
+      "snapshot": "form_templates.json",
+      "sha256": "e58e53a7afbcc9bc9c4e4fd88b2aa358c60efeee9030304b27be58e0ed675099"
+    },
+    {
+      "source": "src/extraction.py",
+      "snapshot": "context/extraction.py.txt",
+      "sha256": "8f2afcccd69702cd1468632cd00e42a48cbd1e4f2ac12ffe39db86287f04dd17"
+    },
+    {
+      "source": "src/schemas/document_schemas.py",
+      "snapshot": "context/document_schemas.py.txt",
+      "sha256": "862d6a17f9883696de04d30eb8675b5c40b95ea489f2d470f4de86c297906468"
+    },
+    {
+      "source": "src/schemas/extraction_schemas.py",
+      "snapshot": "context/extraction_schemas.py.txt",
+      "sha256": "542519b63d0da4468febcfc68454d1765f22c16ee3a13f545df88ca40ae0b1f5"
+    },
+    {
+      "source": "src/schemas/schemas.py",
+      "snapshot": "context/schemas.py.txt",
+      "sha256": "22b5bc5c981ea670cef33955a0b71c26d8003db37d4c174307b4cdfbdc6cb951"
+    }
+  ],
+  "artifacts": {
+    "verification.py.txt": {
+      "sha256": "f02337934c603238ae8f6bb568317af6151a14770996b8bbbb9e219e9d1bca4c",
+      "bytes": 23967
+    },
+    "field_rules.py.txt": {
+      "sha256": "5320445c9d5eaa9dcf10428daf3970170d00a29984fd4ad8f25f32e18ae79846",
+      "bytes": 8439
+    },
+    "document_type.py.txt": {
+      "sha256": "78202fbbb7bcdbe1ff4efc72ac5590b6c477f8d043b1ee12a0d1c8c0898fde1d",
+      "bytes": 9224
+    },
+    "form_templates.json": {
+      "sha256": "e58e53a7afbcc9bc9c4e4fd88b2aa358c60efeee9030304b27be58e0ed675099",
+      "bytes": 3033
+    },
+    "context/extraction.py.txt": {
+      "sha256": "8f2afcccd69702cd1468632cd00e42a48cbd1e4f2ac12ffe39db86287f04dd17",
+      "bytes": 22418
+    },
+    "context/document_schemas.py.txt": {
+      "sha256": "862d6a17f9883696de04d30eb8675b5c40b95ea489f2d470f4de86c297906468",
+      "bytes": 3315
+    },
+    "context/extraction_schemas.py.txt": {
+      "sha256": "542519b63d0da4468febcfc68454d1765f22c16ee3a13f545df88ca40ae0b1f5",
+      "bytes": 3959
+    },
+    "context/schemas.py.txt": {
+      "sha256": "22b5bc5c981ea670cef33955a0b71c26d8003db37d4c174307b4cdfbdc6cb951",
+      "bytes": 1572
+    },
+    "resolved_rules.json": {
+      "sha256": "9dfe52d410c94f78b7efaf02fec1b67b353d5065b50cd534e976124f1fe7081c",
+      "bytes": 20474
+    },
+    "README.md": {
+      "sha256": "bd6d55f1893efd8dd06929bc9d9787cbee6c01df39bb1242832bcaf991b64c83",
+      "bytes": 2388
+    }
+  }
+}
