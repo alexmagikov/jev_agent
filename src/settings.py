@@ -1,14 +1,28 @@
 from urllib.parse import urlsplit
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class JevClientSettings(BaseSettings):
+class DecisionModelSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    api_key: SecretStr = Field(validation_alias="JEV_API_KEY")
+    api_key: SecretStr = Field(min_length=1, validation_alias=AliasChoices("DECISION_API_KEY", "JEV_API_KEY"))
+    base_url: str = Field(default="https://api.typesafe.ai", validation_alias=AliasChoices("DECISION_BASE_URL", "JEV_BASE_URL"))
+    model: str = Field(default="jev-latest", min_length=1, validation_alias=AliasChoices("DECISION_MODEL", "JEV_MODEL"))
+    timeout_seconds: float = Field(default=120, gt=0, le=600, validation_alias="DECISION_TIMEOUT_SECONDS")
+    max_retries: int = Field(default=0, ge=0, le=5, validation_alias="DECISION_MAX_RETRIES")
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        url = urlsplit(value)
+        local_http = url.scheme == "http" and url.hostname in ("localhost", "127.0.0.1", "::1")
+        if (not url.hostname or (url.scheme != "https" and not local_http)
+                or url.username or url.password or url.query or url.fragment):
+            raise ValueError("DECISION_BASE_URL: нужен HTTPS либо HTTP localhost, без credentials/query/fragment")
+        return value.rstrip("/")
 
 
 class JeffSettings(BaseSettings):
@@ -54,6 +68,31 @@ class CLMSettings(BaseSettings):
         if (not url.hostname or (url.scheme != "https" and not local_http)
                 or url.username or url.password or url.query or url.fragment):
             raise ValueError("CLM_BASE_URL: нужен HTTPS либо HTTP localhost, без credentials/query/fragment")
+        return value.rstrip("/")
+
+
+class LayaSettings(BaseSettings):
+    """Отдельный laya-serve; multilingual выбирается явно, без автороутинга."""
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    base_url: str = Field(default="http://127.0.0.1:8770", validation_alias="LAYA_BASE_URL")
+    model: str = Field(default="multilingual", min_length=1, validation_alias="LAYA_MODEL")
+    api_key: SecretStr | None = Field(default=None, min_length=1, validation_alias="LAYA_API_KEY")
+    timeout_seconds: float = Field(default=120, gt=0, le=600, validation_alias="LAYA_TIMEOUT_SECONDS")
+    max_retries: int = Field(default=0, ge=0, le=5, validation_alias="LAYA_MAX_RETRIES")
+    wrong_threshold: float = Field(default=0.7, gt=0, lt=1, validation_alias="LAYA_WRONG_THRESHOLD")
+    max_len: int = Field(default=8192, ge=1, le=8192, validation_alias="LAYA_MAX_LEN")
+    head_max_len: int = Field(default=2048, ge=1, le=8192, validation_alias="LAYA_HEAD_MAX_LEN")
+
+    @field_validator("base_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        url = urlsplit(value)
+        local_http = url.scheme == "http" and url.hostname in ("localhost", "127.0.0.1", "::1")
+        if (not url.hostname or (url.scheme != "https" and not local_http)
+                or url.username or url.password or url.query or url.fragment):
+            raise ValueError("LAYA_BASE_URL: нужен HTTPS либо HTTP localhost, без credentials/query/fragment")
         return value.rstrip("/")
 
 
@@ -124,4 +163,4 @@ class PipelineSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     max_attempts: int = Field(default=2, ge=1, le=3, validation_alias="EXTRACTION_MAX_ATTEMPTS")
-    wrong_threshold: float = Field(default=0.7, gt=0, lt=1, validation_alias="JEV_WRONG_THRESHOLD")
+    wrong_threshold: float = Field(default=0.7, gt=0, lt=1, validation_alias=AliasChoices("DECISION_WRONG_THRESHOLD", "JEV_WRONG_THRESHOLD"))

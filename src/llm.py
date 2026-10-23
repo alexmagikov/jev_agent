@@ -18,7 +18,7 @@ from src.extraction import (
 )
 from src.field_rules import (
     INVOICE_AMOUNT_RULE, INVOICE_SUBJECT_RULE, ITEM_DESCRIPTION_RULE, ITEM_QUANTITY_RULE,
-    ITEM_UNIT_PRICE_RULE, ITEM_UNIT_RULE, TRANSFER_ALIAS_RULES,
+    ITEM_UNIT_PRICE_RULE, ITEM_UNIT_RULE, TRANSFER_ALIAS_RULES, QUOTED_PRODUCT_NAME_RULE,
     ITEMS_PRESENCE_RULE, ITEMS_SELECTION_RULE, ITEMS_EXAMPLES, RECIPIENT_NAME_RULE, BASIS_NUMBER_RULE,
     VAT_MODE_RULE, VAT_RATE_RULE,
 )
@@ -170,9 +170,10 @@ _PROMPT_SOURCES_AND_DIALOGUE = """Используй только сведени
 простое упоминание не обязательно является исправлением."""
 
 _PROMPT_FIELD_STATUSES = """Для каждого поля определи: status (fillable/missing/ambiguous/invalid), value и evidence.
-evidence содержит message_id и точную непустую цитату пользовательского сообщения.
-Нет данных — missing. ambiguous — в исходном диалоге есть данные, но их принадлежность или смысл не понятны, есть двусмысленность,
-например два актуальных варианта без выбора. Неуверенность модели — не неоднозначность источника.
+evidence.quote — непустая подстрока messages[message_id].text после JSON-декодирования:
+не меняй кавычки, пробелы и пунктуацию. Нормализация value не меняет quote.
+Нет данных — missing. ambiguous — неразрешённый выбор или двусмысленность смысла/принадлежности
+данных в источнике, не неуверенность модели.
 Отсутствие счёта, БИК или других реквизитов не означает ambiguous.
 invalid — пользователь указал данные явно неверного формата, а не просто не указал их.
 Для missing, ambiguous и invalid обязательно value=null. Для missing evidence обычно [].
@@ -312,6 +313,7 @@ def build_extraction_prompt(document_type: SupportedDocumentType) -> str:
             INVOICE_AMOUNT_RULE,
             INVOICE_SUBJECT_RULE,
             ITEM_DESCRIPTION_RULE,
+            QUOTED_PRODUCT_NAME_RULE,
             ITEM_QUANTITY_RULE,
             ITEM_UNIT_PRICE_RULE,
             ITEM_UNIT_RULE,

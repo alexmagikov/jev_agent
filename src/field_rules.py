@@ -4,6 +4,7 @@
 эквивалентность ограничена явно разрешёнными вариантами двух полей перевода.
 """
 
+# Под вопросом
 PERMITTED_ALIASES = {
     ("transfer_draft", "destination_bank"): (("Сбер", "Сбера", "Сбербанк"),),
     ("transfer_draft", "source_account_kind"): (("расчётный счёт", "расчётный"),),
@@ -68,12 +69,21 @@ VAT_RATE_RULE = (
 )
 
 ITEM_DESCRIPTION_RULE = (
-    "For items.value[i].description only, normalize ordinary names to singular nominative when "
-    "unambiguous; this does not imply quantity=1. Preserve meaning and characteristics. Keep "
-    "established product names, names in quotation marks, plural-only nouns (ножницы), and "
-    "ambiguous or meaning-changing forms unchanged. For quoted names, omit only outer quotation "
-    "delimiters; preserve inside text and embedded quotes exactly. Do not normalize subject or "
-    "evidence."
+    "For item descriptions only, use singular nominative when unambiguous; never infer quantity=1. "
+    "Preserve meaning, characteristics, established names, names in quotation marks, plural-only "
+    "nouns (ножницы) and ambiguous forms. Do not singularize subject or change evidence."
+)
+
+ITEM_DESCRIPTION_SEMANTIC_RULE = (
+    "Check product/service identity and user-stated characteristics only. Meaning-preserving "
+    "number/case changes are not errors. Do not judge quantity, unit or price here. "
+    "A different product, invented characteristics or a changed quoted product name is an error."
+)
+
+QUOTED_PRODUCT_NAME_RULE = (
+    "For subject/item quoted names, omit external generic labels (товар/услуга) and outer quotation "
+    "delimiters; preserve text and embedded quotes inside the name. Keep labels inside the name. "
+    "Evidence stays verbatim."
 )
 
 LINE_CHARGES_RULE = (
@@ -99,16 +109,16 @@ INVOICE_AMOUNT_RULE = (
 )
 
 INVOICE_SUBJECT_RULE = (
-    "Subject and items are not mutually exclusive. One named billed category supports both subject "
-    "and item description, even without quantity or a definite price; no separate purpose sentence "
-    "is needed. For several different goods, use an explicitly stated common purpose; do not "
-    "invent one by concatenating names."
+    "Subject and items are not mutually exclusive: one billed category supports both without "
+    "quantity, price or a separate purpose sentence. For different goods require a stated common "
+    "purpose; never concatenate names."
 )
 
 ITEM_UNIT_RULE = (
-    "unit must be an explicit measurement/packaging unit (штук, кг, часов, коробок). A counted "
-    "goods/service noun is not a unit: preserve its quantity but leave unit=null unless a separate "
-    "unit is stated."
+    "Explicit measurement/packaging units (штук, кг, часов, коробок, комплекта): copy the stated "
+    "form (шт. stays шт.); no separate unit label is needed. A product name is not a unit: 'товар «Подарок»: "
+    "2 комплекта' has unit=комплекта, but '2 консультации' has quantity=2, unit=null. "
+    "A name alone never implies a unit."
 )
 
 ITEM_QUANTITY_RULE = (

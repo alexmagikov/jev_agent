@@ -10,7 +10,7 @@ from src.cases.document_type import (
     NONE_REASON_TEXT,
     reason_text,
 )
-from src.client import AsyncJev, JevError, JevRateLimitError
+from src.client import DecisionModelClient, DecisionModelError, DecisionModelRateLimitError
 from src.schemas.schemas import DocumentType, Probability
 from src.schemas.document_schemas import (
     DocumentResult,
@@ -34,20 +34,20 @@ class DocumentTypeDecision(BaseModel):
 
 async def classify_document(
     messages: list[DocumentMessage],
-    client: AsyncJev,
+    client: DecisionModelClient,
 ) -> DocumentTypeDecision:
     """Определяет актуальный тип черновика и объясняет результат `none`.
 
-    Оба вопроса (`document_type` и `none_reason`) отправляются в JEV одним
+    Оба вопроса (`document_type` и `none_reason`) отправляются модели одним
     запросом. Причина используется только тогда, когда JEV выбрал `none`.
     """
 
     case = DocumentTypeCase(state=DocumentTypeState(messages=messages))
     try:
         response = await case.run(client)
-    except JevRateLimitError as error:
+    except DecisionModelRateLimitError as error:
         raise PipelineRateLimitError(str(error)) from error
-    except JevError as error:
+    except DecisionModelError as error:
         raise PipelineError(str(error)) from error
 
     document_type = response.answers.document_type
@@ -80,28 +80,31 @@ class PipelineRejectionError(PipelineError):
 async def process_document(
     case_id: str,
     messages: list[DocumentMessage],
-    client: AsyncJev | None,
+    client: DecisionModelClient | None,
     extractor: AsyncLLMExtractor,
     *,
     max_attempts: int = 2,
     wrong_threshold: float = 0.7,
     debug: bool = False,
-    use_jev: bool = True,
+    use_verifier: bool = True,
 ) -> DocumentResult:
-    """С Jev: классификация -> LLM -> Python -> Jev; без: LLM -> LLM -> Python."""
+    """Внешняя модель: классификация -> LLM -> Python -> проверка; без: LLM -> LLM -> Python.
+
+    use_verifier включает внешнюю классификацию и смысловую проверку полей.
+    """
 
     if not 1 <= max_attempts <= 3 or not 0 < wrong_threshold < 1:
         raise ValueError("Некорректные настройки числа попыток или порога")
-    if use_jev and client is None:
-        raise ValueError("Для режима с Jev нужен клиент")
+    if use_verifier and client is None:
+        raise ValueError("Для режима с верификатором нужен клиент")
     try:
         validate_messages(messages)
     except ExtractionError as error:
         raise PipelineError(f"{case_id}: {error}") from error
 
-    if use_jev:
+    if use_verifier:
         if debug:
-            print(f"[{case_id}] Классификация: запрос к Jev…", flush=True)
+            print(f"[{case_id}] Классификация: запрос к {getattr(client, 'name', 'Decision model')}…", flush=True)
         decision = await classify_document(messages, client)
     else:
         classification_feedback: list[str] = []
@@ -134,7 +137,7 @@ async def process_document(
         
     return await process_selected_document(
         case_id, messages, decision, client, extractor,
-        max_attempts=max_attempts, wrong_threshold=wrong_threshold, debug=debug, use_jev=use_jev,
+        max_attempts=max_attempts, wrong_threshold=wrong_threshold, debug=debug, use_verifier=use_verifier,
     )
 
 
@@ -142,21 +145,21 @@ async def process_selected_document(
     case_id: str,
     messages: list[DocumentMessage],
     decision: DocumentTypeDecision,
-    client: AsyncJev | None,
+    client: DecisionModelClient | None,
     extractor: AsyncLLMExtractor,
     *,
     max_attempts: int = 2,
     wrong_threshold: float = 0.7,
     debug: bool = False,
-    use_jev: bool = True,
+    use_verifier: bool = True,
     initial_proposal: ExtractionProposal | None = None,
     on_candidate: Callable[[ExtractionProposal, PreparedFields], None] | None = None,
 ) -> DocumentResult:
     """Общий этап после классификации; initial_proposal позволяет парный аудит одного кандидата."""
     if not 1 <= max_attempts <= 3 or not 0 < wrong_threshold < 1:
         raise ValueError("Некорректные настройки числа попыток или порога")
-    if use_jev and client is None:
-        raise ValueError("Для режима с Jev нужен клиент")
+    if use_verifier and client is None:
+        raise ValueError("Для режима с верификатором нужен клиент")
     try:
         validate_messages(messages)
     except ExtractionError as error:
@@ -174,6 +177,7 @@ async def process_selected_document(
 
     feedback: list[str] = []
     repair_base: ExtractionProposal | None = None
+    repair_checked_fields: PreparedFields | None = None
     repair_fields: list[str] = []
     repair_paths: list[str] = []
     validation_failures = []
@@ -191,6 +195,7 @@ async def process_selected_document(
                 proposal = await extractor.extract(
                     messages, decision.document_type, feedback=feedback,
                     previous_proposal=repair_base, repair_fields=repair_fields, repair_paths=repair_paths,
+                    previous_checked_fields=repair_checked_fields,
                 )
                 # Защита уже проверенных полей, даже если LLM проигнорировала область ремонта.
                 proposal = merge_repair(repair_base, proposal, repair_paths)
@@ -217,11 +222,11 @@ async def process_selected_document(
         
         feedback = []
         failure_reason = "semantic_rejection"
-        if use_jev:
+        if use_verifier:
             assert client is not None
             try:
                 if debug:
-                    print(f"[{case_id}] Jev: проверка полей…", flush=True)
+                    print(f"[{case_id}] {getattr(client, 'name', 'Decision model')}: проверка полей…", flush=True)
 
                 feedback = await verify_fields(
                     messages, 
@@ -232,13 +237,13 @@ async def process_selected_document(
                     wrong_threshold,
                     debug=debug,
                 )
-            except JevRateLimitError as error:
+            except DecisionModelRateLimitError as error:
                 raise PipelineRateLimitError(f"{case_id}: {error}") from error
-            except (VerificationError, JevError) as error:
+            except (VerificationError, DecisionModelError) as error:
                 raise PipelineError(f"{case_id}: {error}") from error
 
             if debug:
-                print(f"[{case_id}] Замечания Jev:", flush=True)
+                print(f"[{case_id}] Замечания {getattr(client, 'name', 'Decision model')}:", flush=True)
                 for remark in feedback:
                     print("  " + remark, flush=True)
                 if not feedback:
@@ -257,6 +262,7 @@ async def process_selected_document(
             raise PipelineError(f"{case_id}: проверка вернула неизвестное поле для исправления") from error
         repair_fields = repair_roots(repair_paths)
         repair_base = proposal.model_copy(deep=True)
+        repair_checked_fields = fields.model_copy(deep=True)
 
     summary = "; ".join(feedback)
     raise PipelineRejectionError(

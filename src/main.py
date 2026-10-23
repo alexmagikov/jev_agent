@@ -9,14 +9,14 @@ from typing import Literal
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from src.cases.document_type import DocumentMessage
-from src.client import AsyncCLM, AsyncDecisionClient, AsyncJeff, AsyncJev, JevUsage
+from src.client import decision_sdk_options, AsyncCLM, DecisionModelClient, AsyncJeff, AsyncLaya, DecisionUsage
 from src.schemas.document_schemas import DocumentResult
 from src.extraction import validate_messages
 from src.llm import AsyncLLMExtractor, LLMUsage
 from src.metrics import FieldMetrics, MetricsReport, calculate_metrics
 from src.pipeline import PipelineError, PipelineRateLimitError, classify_document, process_document
 from src.schemas.schemas import DocumentType, SplitFilter, DataSplit, Probability
-from src.settings import CLMSettings, JeffSettings, JevClientSettings, LLMSettings, PipelineSettings
+from src.settings import CLMSettings, JeffSettings, DecisionModelSettings, LayaSettings, LLMSettings, PipelineSettings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LABEL_ADAPTER = TypeAdapter(DocumentResult)
@@ -146,7 +146,7 @@ def write_errors(errors: list[dict[str, str]], path: Path) -> None:
 
 async def classify_cases(
     cases: list[InputCase],
-    client: AsyncDecisionClient,
+    client: DecisionModelClient,
 ) -> list[DocumentTypeResult]:
     """Последовательно классифицирует диалоги выбранной моделью решений."""
 
@@ -250,7 +250,7 @@ def print_llm_usage(usage: LLMUsage) -> None:
     print(f"  Оценка стоимости по usage и заданным тарифам: {cost}")
 
 
-def print_jev_usage(usage: JevUsage | None, *, name: str = "Jev") -> None:
+def print_decision_usage(usage: DecisionUsage | None, *, name: str = "Decision model") -> None:
     if usage is None:
         print(f"{name}: статистика SDK н/д")
     else:
@@ -275,11 +275,12 @@ async def main(
     limit: int | None = None,
     debug: bool = False,
     fail_fast: bool = False,
-    verifier: Literal["jeff", "clm", "jev"] = "jeff",
+    verifier: Literal["jeff", "clm", "jev", "laya", "decision"] = "jeff",
+    case_ids: list[str] | None = None,
 ) -> None:
     if mode not in ("classification", "full", "llm-only"):
         raise ValueError("Неизвестный режим обработки")
-    if verifier not in ("jeff", "clm", "jev"):
+    if verifier not in ("jeff", "clm", "jev", "laya", "decision"):
         raise ValueError("Неизвестная модель проверки")
     if limit is not None and limit < 1:
         raise ValueError("--limit должен быть положительным")
@@ -299,6 +300,14 @@ async def main(
 
     # Обнаружение ошибок до платных запросов
     cases = load_cases(input_path, split)
+    if case_ids:
+        requested_ids = set(case_ids)
+        missing_ids = requested_ids - {case.case_id for case in cases}
+        if missing_ids:
+            raise ValueError(
+                f"Кейсы не найдены в выборке '{split}': {', '.join(sorted(missing_ids))}"
+            )
+        cases = [case for case in cases if case.case_id in requested_ids]
     if limit is not None:
         cases = cases[:limit]
     if not cases:
@@ -309,18 +318,23 @@ async def main(
     run_started = perf_counter()
     stopped_error: PipelineError | None = None
     client = None
-    verifier_name = {"jeff": "Jeff", "clm": "CLM", "jev": "Jev"}[verifier]
+    verifier_name = {"jeff": "Jeff", "clm": "CLM", "jev": "Jev", "laya": "Laya", "decision": "Decision model"}[verifier]
     decision_settings = None
     if mode != "llm-only":
-        if verifier == "jeff":
+        if verifier == "laya":
+            decision_settings = LayaSettings()
+            client = AsyncLaya(decision_settings)
+        elif verifier == "jeff":
             decision_settings = JeffSettings()
             client = AsyncJeff(decision_settings)
         elif verifier == "clm":
             decision_settings = CLMSettings()
             client = AsyncCLM(decision_settings)
         else:
-            settings = JevClientSettings()
-            client = AsyncJev(api_key=settings.api_key.get_secret_value())
+            settings = DecisionModelSettings()
+            options = decision_sdk_options(settings)
+            client = DecisionModelClient(api_key=options.pop("api_key"), sdk_options=options, name=settings.model)
+            verifier_name = settings.model if verifier == "decision" else "Jev"
 
     if document_mode:
         pipeline_settings = PipelineSettings()
@@ -332,8 +346,10 @@ async def main(
             print("Режим llm-only: классификация LLM → извлечение LLM → Python; без внешнего верификатора.", flush=True)
         else:
             print(f"Режим full: классификация {verifier_name} → извлечение LLM → Python → проверка {verifier_name} → ограниченный ремонт.", flush=True)
-            if verifier in ("clm", "jeff"):
+            if verifier in ("clm", "jeff", "laya"):
                 print(f"{verifier_name}: порог={wrong_threshold:g}; калибровка вероятности ошибки на наших данных не подтверждена.", flush=True)
+            if verifier == "laya":
+                print(f"Laya: max_len={decision_settings.max_len}, head_max_len={decision_settings.head_max_len}; длинный контекст может усекаться моделью.", flush=True)
         if debug:
             print("DEBUG: ответы модели и эталоны могут содержать реквизиты; не публикуйте вывод.", flush=True)
         async with AsyncLLMExtractor(LLMSettings(), debug=debug) as extractor:
@@ -350,7 +366,7 @@ async def main(
                             max_attempts=pipeline_settings.max_attempts,
                             wrong_threshold=wrong_threshold,
                             debug=debug,
-                            use_jev=mode == "full",
+                            use_verifier=mode == "full",
                         )
                     except PipelineError as error:
                         # Не ловим Exception: ошибки программы и отмена должны быть видны.
@@ -371,7 +387,7 @@ async def main(
             finally:
                 print_llm_usage(extractor.usage)
                 if client is not None:
-                    print_jev_usage(getattr(client, "usage", None), name=verifier_name)
+                    print_decision_usage(getattr(client, "usage", None), name=verifier_name)
                 print(f"Полное время прогона ({mode}): {perf_counter() - run_started:.2f} с", flush=True)
     else:
         results = await classify_cases(cases, client)
@@ -406,7 +422,7 @@ async def main(
 
 def build_parser() -> ArgumentParser:
     parser = ArgumentParser(
-        description="Обработка документов с Jeff/CLM/Jev (full) или только LLM (llm-only)."
+        description="Обработка документов с Jeff/CLM/Jev/Laya (full) или только LLM (llm-only)."
     )
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT_PATH)
     parser.add_argument("--output", type=Path, default=None,
@@ -414,9 +430,13 @@ def build_parser() -> ArgumentParser:
                              "или predictions.llm-only.jsonl (llm-only).")
     parser.add_argument("--labels", type=Path, default=DEFAULT_LABELS_PATH)
     parser.add_argument("--mode", choices=("classification", "full", "llm-only"), default="classification")
-    parser.add_argument("--verifier", choices=("jeff", "clm", "jev"), default="jeff",
+    parser.add_argument("--verifier", choices=("jeff", "clm", "jev", "laya", "decision"), default="jeff",
                         help="Классификатор и верификатор; по умолчанию собственный Jeff API.")
-    parser.add_argument("--limit", type=int, help="Обработать только первые N кейсов выбранной выборки.")
+    parser.add_argument("--case-id", action="append", dest="case_ids",
+                        help="Обработать только этот case_id из выбранного split; можно повторять. "
+                             "Порядок — как в датасете, повторы ID игнорируются.")
+    parser.add_argument("--limit", type=int,
+                        help="Обработать первые N кейсов после фильтрации по --split и --case-id.")
     parser.add_argument(
         "--debug", action="store_true",
         help="В full/llm-only вывести эталон, ответ LLM и замечания проверок; вывод может содержать реквизиты.",
@@ -449,6 +469,7 @@ if __name__ == "__main__":
                 debug=arguments.debug,
                 fail_fast=arguments.fail_fast,
                 verifier=arguments.verifier,
+                case_ids=arguments.case_ids,
             )
         )
     except ValidationError as error:
