@@ -82,8 +82,9 @@ ITEM_DESCRIPTION_RULE = (
 )
 
 ITEM_DESCRIPTION_SEMANTIC_RULE = (
-    "Check product/service identity and user-stated characteristics only. Meaning-preserving "
-    "number/case changes are not errors. Do not judge quantity, unit or price here. "
+    "Check product/service identity and stated characteristics only. Singular nominative "
+    "normalization ('стулья' -> 'стул') preserves identity; number/case changes alone are not errors. "
+    "Do not judge quantity, unit or price. "
     "A different product, invented characteristics or a changed quoted product name is an error."
 )
 

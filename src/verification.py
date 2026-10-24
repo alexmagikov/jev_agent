@@ -64,6 +64,10 @@ _RULES = (
     and that the formula matches the meaning of the message. The calculated result
     does not have to appear verbatim in the text.
     Return the probability that the specified error is present."""
+    " Item descriptions are normalized to singular nominative when unambiguous ('стулья' -> 'стул'). "
+    "This preserves product identity, including when the source is plural; it is not an unsupported "
+    "value or a different product. Preserve quoted names, plural-only nouns and ambiguous forms. "
+    "Do not infer quantity=1 or change units/evidence."
 )
 
 
@@ -283,7 +287,8 @@ def _build_verification_checks(fields: PreparedFields) -> dict[str, str]:
                         questions[f"items[{index}].{attribute}::value_wrong"] = (
                             f"Does {path} name a different product/service or add unsupported "
                             "characteristics for this single line item compared with the latest user request? "
-                            "Ignore meaning-preserving number/case changes; "
+                            "Singular nominative normalization preserves identity; "
+                            "ignore meaning-preserving number/case changes; "
                             "do not judge quantity, unit or price here."
                         )
                         continue
@@ -393,7 +398,7 @@ def build_verification_questions(
         if path.endswith("].description") and key.endswith("::value_wrong"):
             criteria = {
                 "true": "The description names a different product/service or adds unsupported characteristics.",
-                "false": "Same requested product/service; meaning-preserving number/case changes and unknown quantity/unit/price are not description errors.",
+                "false": "Same requested product/service, including singular nominative normalization; meaning-preserving number/case changes and unknown quantity/unit/price are not description errors.",
             }
         if key.endswith("::superseded") and current["status"] == "fillable":
             criteria = {
