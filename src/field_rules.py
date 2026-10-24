@@ -116,9 +116,9 @@ INVOICE_AMOUNT_RULE = (
 )
 
 INVOICE_SUBJECT_RULE = (
-    "Subject and items are not mutually exclusive. One billed category supports both without "
-    "quantity/price. Different goods need a stated common purpose, not a generic list "
-    "heading or joined names. Honor explicit subject assignments, even generic."
+    "Subject and items are not mutually exclusive: one billed category supports both without "
+    "quantity, price or a separate purpose sentence. For different goods require a stated common "
+    "purpose; never concatenate names."
 )
 
 ITEM_UNIT_RULE = (
