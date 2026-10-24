@@ -131,6 +131,23 @@ def _has_whole_numeric_source(
     return False
 
 
+def _has_whole_unit_source(
+    unit: str, sources: list[SourceQuote], indexed: dict[str, DocumentMessage],
+) -> bool:
+    """Точная форма в указанных репликах, не часть слова/единицы; перед ней допустимо число.
+
+    Проверка только лексическая: актуальность и принадлежность позиции оценивает Jev.
+    Точка после короткой единицы может быть пунктуацией предложения, поэтому здесь
+    она не объявляется частью сокращения автоматически.
+    """
+    if not unit.strip():
+        return False
+    # Слева запрещены буквы/подчёркивание, но разрешена цифра (2м, 2,5кг).
+    # Справа запрещены любые word-символы, включая цифры/степени (м != м2/м²).
+    pattern = re.compile(rf"(?<![^\W\d]){re.escape(unit)}(?!\w)")
+    return any(pattern.search(indexed[source.message_id].text) for source in sources)
+
+
 _NUMBER = r"[+-]?(?:\d{1,3}(?:[ \u00a0\u202f]\d{3})+|\d+)(?:[.,]\d+)?"
 # Число может примыкать к известной единице, но не к произвольному слову/артикулу.
 _ATTACHED_UNIT = (
@@ -411,6 +428,15 @@ def prepare_fields(
                 raise ExtractionError("items: ожидается непустой список позиций")
             
             for index, item in enumerate(value):
+                if item["unit"] is not None and not _has_whole_unit_source(
+                    item["unit"], proposal.fields[name].evidence, indexed,
+                ):
+                    raise ExtractionError(
+                        f"items[{index}].unit: единица измерения не найдена целиком в указанных репликах user. "
+                        "Скопируй исходную форму без изменения окончания или обозначения; "
+                        "если единица не указана, верни unit=null.",
+                        code="invalid_source",
+                    )
                 for key in ("quantity", "unit_price_rub"):
                     number = item[key]
                     if number is not None and f"items[{index}].{key}" not in calculated:
