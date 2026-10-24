@@ -20,7 +20,7 @@ from src.field_rules import (
     INVOICE_AMOUNT_RULE, INVOICE_SUBJECT_RULE, ITEM_DESCRIPTION_RULE, ITEM_QUANTITY_RULE,
     ITEM_UNIT_PRICE_RULE, ITEM_UNIT_RULE, TRANSFER_ALIAS_RULES, QUOTED_PRODUCT_NAME_RULE,
     ITEMS_PRESENCE_RULE, ITEMS_SELECTION_RULE, ITEMS_EXAMPLES, RECIPIENT_NAME_RULE, BASIS_NUMBER_RULE,
-    VAT_MODE_RULE, VAT_RATE_RULE,
+    VAT_MODE_RULE, VAT_RATE_RULE, TRANSFER_RECIPIENT_RULE,
 )
 from src.settings import LLMSettings
 from src.repairs import merge_repair, plan_repair, repair_roots
@@ -191,7 +191,6 @@ _PROMPT_TRANSFER_RULES = """Заполняй только поля перево�
 именно выбранную пользователем маску, сохраняя её символы и цифры.
 destination_bank — банк выбранной карты, а не банк счёта списания или другой карты.
 source_account_kind — названный тип счёта списания; не придумывай его из контекста.
-recipient_relation='self' только если пользователь указал собственную карту.
 Не добавляй отсутствующие сведения. Сумма amount_rub относится к актуальному переводу,
 а не к балансу, комиссии, лимиту или прошлой операции. Если пользователь явно указал
 сумму перевода, копируй её числом, calculation=null.
@@ -320,7 +319,7 @@ def build_extraction_prompt(document_type: SupportedDocumentType) -> str:
             _PROMPT_ITEMS_REPAIR,
         )
     elif document_type == "transfer_draft":
-        specific = (_PROMPT_TRANSFER_RULES, *TRANSFER_ALIAS_RULES.values())
+        specific = (_PROMPT_TRANSFER_RULES, TRANSFER_RECIPIENT_RULE, *TRANSFER_ALIAS_RULES.values())
     else:
         raise ValueError("Неизвестный тип документа для извлечения")
     return "\n\n".join((*common, *specific, _PROMPT_FEEDBACK))

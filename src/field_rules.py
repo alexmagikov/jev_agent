@@ -17,6 +17,13 @@ TRANSFER_ALIAS_RULES = {
     for (document_type, name), groups in PERMITTED_ALIASES.items()
 }
 
+TRANSFER_RECIPIENT_RULE = (
+    "recipient_relation='self' when the user explicitly requests a transfer to themselves ('себе') "
+    "or their own card. Missing card/bank details do not negate self. The selected document type "
+    "alone is not evidence; another person's card does not support self. Never invent card/bank "
+    "details from this relation."
+)
+
 ITEMS_PRESENCE_RULE = (
     "Selected billed goods/services require one line each and items.status=fillable. An item with "
     "only a supported description is fillable. Known attributes need user evidence or an "
@@ -109,9 +116,9 @@ INVOICE_AMOUNT_RULE = (
 )
 
 INVOICE_SUBJECT_RULE = (
-    "Subject and items are not mutually exclusive: one billed category supports both without "
-    "quantity, price or a separate purpose sentence. For different goods require a stated common "
-    "purpose; never concatenate names."
+    "Subject and items are not mutually exclusive. One billed category supports both without "
+    "quantity/price. Different goods need a stated common purpose, not a generic list "
+    "heading or joined names. Honor explicit subject assignments, even generic."
 )
 
 ITEM_UNIT_RULE = (
