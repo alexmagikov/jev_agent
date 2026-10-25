@@ -2,6 +2,7 @@
 
 import re
 
+from src.cases.document_type import DocumentMessage
 from src.schemas.extraction_schemas import ExtractionError, ExtractionProposal, SourceQuote
 
 
@@ -30,6 +31,32 @@ def _source_parts(base: ExtractionProposal) -> dict[str, tuple[SourceQuote, str,
                         result[f"{prefix}.operands[{index}].source.{part}"] = (
                             operand.source, part, (len(plan.operands), operand.name),
                         )
+    return result
+
+
+def source_repair_context(
+    base: ExtractionProposal, paths: list[str], messages: list[DocumentMessage],
+) -> list[dict[str, str]]:
+    """Исходный текст для недословных цитат в разрешённой области ремонта.
+
+    Использует те же пути, что и merge_repair. Контекст идёт только в запрос LLM,
+    а не в сообщение исключения; цитаты не исправляются автоматически.
+    """
+    sources = _source_parts(base)
+    indexed = {message.id: message for message in messages}
+    result = []
+    for path in paths:
+        entry = sources.get(path)
+        if entry is None:
+            continue
+        source, part, _ = entry
+        message = indexed.get(source.message_id)
+        if part != "quote" or message is None or message.role != "user":
+            continue
+        if source.quote.strip() and source.quote in message.text:
+            continue
+        result.append({"path": path, "message_id": source.message_id,
+                       "invalid_quote": source.quote, "source_text": message.text})
     return result
 
 
