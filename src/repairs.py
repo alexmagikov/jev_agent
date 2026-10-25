@@ -2,28 +2,55 @@
 
 import re
 
-from src.schemas.extraction_schemas import ExtractionError, ExtractionProposal
+from src.schemas.extraction_schemas import ExtractionError, ExtractionProposal, SourceQuote
 
 
 _ATTRIBUTE_PATH = re.compile(r"items\[(0|[1-9][0-9]*)\]\.(description|quantity|unit|unit_price_rub)")
 _PLANS = {"quantity": "quantity_calculation", "unit_price_rub": "unit_price_calculation"}
 
 
+def _source_parts(base: ExtractionProposal) -> dict[str, tuple[SourceQuote, str, tuple]]:
+    """Разрешённые части источников с проверкой индексов и имён операндов."""
+    result = {}
+    for name, field in base.fields.items():
+        for index, source in enumerate(field.evidence):
+            for part in ("message_id", "quote"):
+                result[f"{name}.evidence[{index}].{part}"] = (source, part, (len(field.evidence),))
+
+        plans = [(f"{name}.calculation", field.calculation)]
+        if name == "items" and isinstance(field.value, list):
+            for index, item in enumerate(field.value):
+                plans.extend((f"items[{index}].{plan_name}", getattr(item, plan_name))
+                             for plan_name in ("quantity_calculation", "unit_price_calculation"))
+                
+        for prefix, plan in plans:
+            if plan is not None:
+                for index, operand in enumerate(plan.operands):
+                    for part in ("message_id", "quote"):
+                        result[f"{prefix}.operands[{index}].source.{part}"] = (
+                            operand.source, part, (len(plan.operands), operand.name),
+                        )
+    return result
+
+
 def _validate_paths(base: ExtractionProposal, paths: list[str]) -> set[str]:
     if not paths:
         raise ValueError("Нужна непустая область ремонта")
     result = set(paths)
+    sources = _source_parts(base)
+    evidence_paths = {f"{name}.evidence" for name in base.fields}
     for path in result:
-        if path in base.fields:
+        if path in base.fields or path in sources or path in evidence_paths:
             continue
         match = _ATTRIBUTE_PATH.fullmatch(path)
         items = base.fields.get("items")
         if (match is None or items is None or items.status != "fillable"
                 or not isinstance(items.value, list) or int(match[1]) >= len(items.value)):
             raise ValueError("Неизвестный путь ремонта: " + path)
-    if "items" in result:
-        result = {path for path in result if not path.startswith("items[")}
-    return result
+    return {path for path in result if not any(
+        parent != path and (path.startswith(parent + ".") or path.startswith(parent + "["))
+        for parent in result
+    )}
 
 
 def plan_repair(base: ExtractionProposal, paths: list[str]) -> list[str]:
@@ -56,7 +83,7 @@ def plan_repair(base: ExtractionProposal, paths: list[str]) -> list[str]:
 
 
 def repair_roots(paths: list[str]) -> list[str]:
-    return sorted({path.split("[", 1)[0] for path in paths})
+    return sorted({path.split("[", 1)[0].split(".", 1)[0] for path in paths})
 
 
 def merge_repair(
@@ -76,9 +103,22 @@ def merge_repair(
     for path in allowed:
         if path in base.fields:
             result.fields[path] = candidate.fields[path].model_copy(deep=True)
-    attribute_paths = [path for path in allowed if path.startswith("items[")]
+
+    old_sources, new_sources = _source_parts(base), _source_parts(candidate)
+    result_sources = _source_parts(result)
+    for path in allowed:
+        if path.endswith(".evidence"):
+            name = path.split(".", 1)[0]
+            result.fields[name].evidence = [source.model_copy(deep=True) for source in candidate.fields[name].evidence]
+        elif path in old_sources:
+            if path not in new_sources or old_sources[path][2] != new_sources[path][2]:
+                raise ExtractionError("Точечный ремонт источника не может менять число цитат или порядок операндов")
+            source, part, _ = new_sources[path]
+            setattr(result_sources[path][0], part, getattr(source, part))
+    attribute_paths = [path for path in allowed if _ATTRIBUTE_PATH.fullmatch(path)]
     if not attribute_paths:
         return result
+    
     old, new = base.fields["items"], candidate.fields["items"]
     if (new.status != old.status or not isinstance(new.value, list)
             or len(new.value) != len(old.value)):
@@ -101,7 +141,7 @@ def merge_repair(
             plan = getattr(source, _PLANS[attribute])
             setattr(target, _PLANS[attribute], plan.model_copy(deep=True) if plan is not None else None)
     # Evidence принадлежит всему полю: сохраняем опору неизменённых атрибутов.
-    seen = {(quote.message_id, quote.quote) for quote in old.evidence}
+    seen = {(quote.message_id, quote.quote) for quote in result.fields["items"].evidence}
     for quote in new.evidence:
         if (quote.message_id, quote.quote) not in seen:
             result.fields["items"].evidence.append(quote.model_copy(deep=True))

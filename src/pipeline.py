@@ -186,6 +186,7 @@ async def process_selected_document(
     for attempt in range(1, max_attempts + 1):
         if debug:
             print(f"[{case_id}] Попытка {attempt}/{max_attempts}: извлечение LLM…", flush=True)
+        proposal = None
         try:
             if attempt == 1 and initial_proposal is not None:
                 proposal = initial_proposal.model_copy(deep=True)
@@ -210,8 +211,21 @@ async def process_selected_document(
             validation_failures.append({"attempt": attempt,
                                         "stage": "llm_response" if isinstance(error, LLMResponseError) else "python_validation",
                                         "code": error.code})
+            
             failure_reason = "invalid_extraction"
             feedback = [str(error)]
+            
+            if isinstance(error, ExtractionError) and proposal is not None:
+                repair_checked_fields = None  # Этот кандидат ещё не прошёл Python целиком.
+                if error.repair_paths:
+                    repair_paths = plan_repair(proposal, list(error.repair_paths))
+                    repair_fields = repair_roots(repair_paths)
+                    repair_base = proposal.model_copy(deep=True)
+                else:
+                    # Без надёжного пути безопасного точечного ремонта нет.
+                    repair_base = None
+                    repair_paths, repair_fields = [], []
+
             if debug:
                 print(f"[{case_id}] Замечания LLM/Python: {feedback[0]}", flush=True)
             continue

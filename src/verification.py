@@ -108,12 +108,12 @@ _SEMANTIC_CRITERIA = {
         "false": "No current unambiguous usable value is omitted; null is justified.",
     },
     "wrong_role": {
-        "true": "The cited information belongs to another entity or role.",
-        "false": "The cited information concerns the intended entity and role; bad format alone is irrelevant.",
+        "true": "The information in instructions.field.evidence belongs to a different entity or role than this field.",
+        "false": "The cited information concerns the intended entity and role, even if malformed; unrelated details elsewhere in messages do not count.",
     },
     "superseded": {
-        "true": "A later explicit user correction replaced or withdrew the cited information.",
-        "false": "No later explicit user correction supersedes the cited information.",
+        "true": "The current null status conflicts with the latest explicit user correction for this field.",
+        "false": "The current null status is still justified, or no correction applies; a historical source change alone is not an error.",
     },
     "unresolved_alternatives": {
         "true": "Actual mutually exclusive usable alternatives remain unresolved; ambiguity was not represented.",
@@ -214,14 +214,24 @@ def _build_verification_checks(fields: PreparedFields) -> dict[str, str]:
             
             if field["evidence"]:
                 checks["wrong_role"] = (
-                    f"Do the cited sources for {path} concern a different person, recipient, bank, "
-                    "document or numerical role than this field? Judge source ownership, not null "
-                    "or a format failure; a malformed value for the correct recipient is not this error."
+                    f"Do the cited sources in instructions.field.evidence for {path} support information "
+                    "belonging to a different person, recipient, bank, document or numerical role than this field? "
+                    "Use messages to resolve the owner and role of the cited information. "
+                    "Other entities' details elsewhere in the dialogue do not make these citations wrong. "
+                    "A malformed value for the correct recipient is not this error."
                 )
-                checks["superseded"] = (
-                    f"Did a later explicit user correction replace or withdraw the information cited "
-                    f"for {path}? A malformed value alone, without a later correction, is not this error."
-                )
+                # Missing after withdrawal is correct; an omitted replacement is
+                # already covered by missing_supported. Only a stale invalid or
+                # ambiguous status needs this additional temporal check.
+                if field["status"] != "missing":
+                    checks["superseded"] = (
+                        f"Does the current null status in instructions.field.status for {path} "
+                        "conflict with the latest explicit user correction for this field? "
+                        "Judge the final status, not whether the cited information changed. "
+                        "Withdrawal without replacement requires missing/null. "
+                        "If the latest data still justify invalid/null or ambiguous/null, answer false. "
+                        "Corrections to other fields and malformed data alone do not count."
+                    )
                 
             if field["status"] != "ambiguous":
                 checks["unresolved_alternatives"] = (
@@ -372,7 +382,7 @@ def build_verification_questions(
         if format_check is not None and current["status"] == "fillable":
             claim["format_check"] = format_check
         
-        if source_candidates is not None:
+        if source_candidates is not None and key.endswith(("::missing_supported", "::unresolved_alternatives")):
             claim["valid_source_candidates"] = source_candidates
         
         if path.startswith("items["):
@@ -429,7 +439,7 @@ async def verify_fields(
     proposal: ExtractionProposal,
     fields: PreparedFields,
     client: DecisionModelClient,
-    wrong_threshold: float = 0.7,
+    wrong_threshold: float = 0.8,
     *,
     debug: bool = False,
 ) -> list[str]:

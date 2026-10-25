@@ -98,7 +98,7 @@ def _check_source(source: SourceQuote, indexed: dict[str, DocumentMessage], *, p
     if message is None or message.role != "user":
         raise ExtractionError(
             f"{path}.message_id: Источник должен ссылаться на существующую реплику user",
-            code="invalid_source",
+            code="invalid_source", repair_paths=(f"{path}.message_id", f"{path}.quote"),
         )
     
     if not source.quote.strip() or source.quote not in message.text:
@@ -106,7 +106,7 @@ def _check_source(source: SourceQuote, indexed: dict[str, DocumentMessage], *, p
             f"{path}.quote: Цитата источника отсутствует в указанной реплике. "
             "Скопируй дословный фрагмент исходного messages[message_id].text; "
             "не меняй кавычки, пробелы и пунктуацию.",
-            code="invalid_source",
+            code="invalid_source", repair_paths=(f"{path}.quote",),
         )
 
 
@@ -334,7 +334,12 @@ def prepare_fields(
         if len(calculated) >= 32:
             raise ExtractionError("Допустимо не больше 32 вычислений на предложение")
         
-        value, formula = _calculate(plan, indexed, target, source_path=source_path)
+        try:
+            value, formula = _calculate(plan, indexed, target, source_path=source_path)
+        except ExtractionError as error:
+            if not error.repair_paths:
+                error.repair_paths = (target,)
+            raise
         checked_field["derivation"] = "; ".join(filter(None, [checked_field["derivation"], formula]))
         checked_field["evidence"] = list(dict.fromkeys([
             *checked_field["evidence"], *(operand.source.message_id for operand in plan.operands),
@@ -346,9 +351,10 @@ def prepare_fields(
         for index, source in enumerate(field.evidence):
             _check_source(source, indexed, path=f"{name}.evidence[{index}]")
         if field.status != "fillable" and field.value is not None:
-            raise ExtractionError(f"{name}: незаполняемое поле должно иметь value=null")
+            raise ExtractionError(f"{name}: незаполняемое поле должно иметь value=null", repair_paths=(name,))
         if field.status in ("fillable", "invalid", "ambiguous") and not field.evidence:
-            raise ExtractionError(f"{name}: для значения или проблемы нужны источники", code="missing_evidence")
+            raise ExtractionError(f"{name}: для значения или проблемы нужны источники", code="missing_evidence",
+                                  repair_paths=(f"{name}.evidence",))
         
         checked_field = {
             "status": field.status,
@@ -361,11 +367,11 @@ def prepare_fields(
         }
         if field.calculation is not None:
             if name != "amount_rub":
-                raise ExtractionError(f"{name}: недопустимое поле для вычисления")
+                raise ExtractionError(f"{name}: недопустимое поле для вычисления", repair_paths=(name,))
             if field.status != "fillable":
-                raise ExtractionError("Нельзя вычислять незаполняемое поле")
+                raise ExtractionError("Нельзя вычислять незаполняемое поле", repair_paths=(name,))
             if field.value is not None:
-                raise ExtractionError(f"{name}: при calculation значение должно быть null", code="conflicting_calculation_value")
+                raise ExtractionError(f"{name}: при calculation значение должно быть null", code="conflicting_calculation_value", repair_paths=(name,))
             
             checked_field["value"] = apply_calculation(
                 field.calculation, name, checked_field, source_path=f"{name}.calculation",
@@ -381,7 +387,7 @@ def prepare_fields(
                         continue
                     target = f"items[{index}].{key}"
                     if getattr(item, key) is not None:
-                        raise ExtractionError(f"{target}: при расчёте значение должно быть null", code="conflicting_calculation_value")
+                        raise ExtractionError(f"{target}: при расчёте значение должно быть null", code="conflicting_calculation_value", repair_paths=(target,))
                     checked_field["value"][index][key] = apply_calculation(
                         plan, target, checked_field, source_path=f"items[{index}].{plan_name}",
                     )
@@ -399,9 +405,9 @@ def prepare_fields(
         quotes = [source.quote for source in proposal.fields[name].evidence]
 
         if value is None:
-            raise ExtractionError(f"{name}: у заполняемого поля нет значения или расчёта", code="missing_value")
+            raise ExtractionError(f"{name}: у заполняемого поля нет значения или расчёта", code="missing_value", repair_paths=(name,))
         if name in exact_fields and (not isinstance(value, str) or not any(value in q for q in quotes)):
-            raise ExtractionError(f"{name}: реквизит должен дословно присутствовать в источнике")
+            raise ExtractionError(f"{name}: реквизит должен дословно присутствовать в источнике", repair_paths=(name,))
         if name in {"recipient_inn", "recipient_account", "recipient_bik"} and not _has_whole_numeric_source(
             value, proposal.fields[name].evidence, indexed,
         ):
@@ -410,7 +416,7 @@ def prepare_fields(
                 "нельзя обрезать цифры в значении или цитате ради нужной длины. "
                 "Если исходный реквизит неверного формата, используй invalid, value=null "
                 "и дословную цитату проблемного реквизита.",
-                code="invalid_source",
+                code="invalid_source", repair_paths=(name,),
             )
         
         numbers: set[Decimal] = set()
@@ -421,11 +427,11 @@ def prepare_fields(
 
         if name in ("amount_rub", "vat_rate_percent") and name not in calculated:
             if not isinstance(value, (int, float)) or Decimal(str(value)) not in numbers:
-                raise ExtractionError(f"{name}: число не подтверждено источником или формулой", code="unsupported_numeric_value")
+                raise ExtractionError(f"{name}: число не подтверждено источником или формулой", code="unsupported_numeric_value", repair_paths=(name,))
             
         if name == "items":
             if not isinstance(value, list) or not value:
-                raise ExtractionError("items: ожидается непустой список позиций")
+                raise ExtractionError("items: ожидается непустой список позиций", repair_paths=("items",))
             
             for index, item in enumerate(value):
                 if item["unit"] is not None and not _has_whole_unit_source(
@@ -435,23 +441,29 @@ def prepare_fields(
                         f"items[{index}].unit: единица измерения не найдена целиком в указанных репликах user. "
                         "Скопируй исходную форму без изменения окончания или обозначения; "
                         "если единица не указана, верни unit=null.",
-                        code="invalid_source",
+                        code="invalid_source", repair_paths=(f"items[{index}].unit",),
                     )
                 for key in ("quantity", "unit_price_rub"):
                     number = item[key]
                     if number is not None and f"items[{index}].{key}" not in calculated:
                         if Decimal(str(number)) not in numbers:
-                            raise ExtractionError(f"items[{index}].{key}: неподтверждённое число")
+                            raise ExtractionError(f"items[{index}].{key}: неподтверждённое число",
+                                                  repair_paths=(f"items[{index}].{key}",))
                     if number is not None and number < 0:
-                        raise ExtractionError("Отрицательное количество или цена позиции")
+                        raise ExtractionError("Отрицательное количество или цена позиции", repair_paths=(f"items[{index}].{key}",))
 
         if _invalid_format(name, value):
             field.update(status="invalid", value=None, derivation=None)
 
     if "vat_mode" in fields:
         if fields["vat_mode"]["value"] == "no_vat" and fields["vat_rate_percent"]["status"] == "fillable":
-            raise ExtractionError("Без НДС не должно одновременно иметь заполненную ставку НДС")
+            raise ExtractionError("Без НДС не должно одновременно иметь заполненную ставку НДС",
+                                  repair_paths=("vat_mode", "vat_rate_percent"))
     try:
         return model.model_validate(fields)
     except ValidationError as error:
-        raise ExtractionError("Значения не соответствуют типам полей выбранного шаблона") from error
+        raise ExtractionError(
+            "Значения не соответствуют типам полей выбранного шаблона",
+            repair_paths=tuple(sorted({item["loc"][0] for item in error.errors()
+                                       if item["loc"] and item["loc"][0] in proposal.fields})),
+        ) from error

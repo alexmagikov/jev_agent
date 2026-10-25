@@ -70,8 +70,10 @@ class ExtractionProposal(DocumentSchema):
 class ExtractionError(ValueError):
     """Некорректное предложение модели, а не отсутствующие данные пользователя."""
 
-    def __init__(self, message: str, *, code: str = "invalid_proposal"):
+    def __init__(self, message: str, *, code: str = "invalid_proposal",
+                 repair_paths: tuple[str, ...] = ()):
         super().__init__(message)
+        self.repair_paths = repair_paths
         allowed = {"invalid_proposal", "invalid_source", "invalid_operand", "invalid_calculation",
                    "missing_evidence", "conflicting_calculation_value", "missing_value",
                    "unsupported_numeric_value"}
