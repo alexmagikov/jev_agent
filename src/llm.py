@@ -39,6 +39,10 @@ class LLMError(RuntimeError):
     Подклассы ниже обрабатываются отдельно и могут требовать другого действия.
     """
 
+    def __init__(self, message: str, *, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
 
 class LLMResponseError(LLMError):
     """LLM ответила, но результат не подходит для обработки.
@@ -639,7 +643,8 @@ class AsyncLLMExtractor:
             else:
                 used_retries = network_retries if separate_rate_limit_budget else attempts - 1
                 if used_retries >= self.settings.max_retries:
-                    raise LLMError(f"LLM API недоступен после {attempts} попыток: {failure}") from None
+                    raise LLMError(f"LLM API недоступен после {attempts} попыток: {failure}",
+                                   status_code=failure.status_code) from None
                 delay = _retry_delay(network_retries, failure.retry_after)
                 network_retries += 1
             await asyncio.sleep(delay)
@@ -674,7 +679,8 @@ class AsyncLLMExtractor:
                         "Ошибка HTTP 400 при обращении к LLM; проверь поддержку json_schema сервером и схему. "
                         "Для явного отключения схемного режима задай LLM_RESPONSE_FORMAT=json_object"
                     )
-                raise LLMError(f"Ошибка HTTP {response.status_code} при обращении к LLM")
+                raise LLMError(f"Ошибка HTTP {response.status_code} при обращении к LLM",
+                               status_code=response.status_code)
             self.usage.responses += 1
             raw = bytearray()
             async for chunk in response.aiter_bytes(chunk_size=65_536):

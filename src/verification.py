@@ -404,6 +404,18 @@ def build_verification_questions(
             "true": "Yes. The specific error in instructions.question is present.",
             "false": "No. The specific error is absent; unrelated errors do not count.",
         }
+
+        if path.endswith("].unit_price_rub") and key.endswith("::value_wrong") and claim["calculation"] is not None:
+            question = (
+                f"Do the cited operands or operation for `{path}` contradict the latest user "
+                "conditions for this line item's unit price? Check which line and numerical role "
+                "each operand belongs to and whether a later correction replaces it. "
+                "Python checked arithmetic; judge operand selection and the requested operation."
+            )
+            criteria = {
+                "true": "An operand is unsupported, superseded or from a different line/role, or the operation contradicts the requested unit price.",
+                "false": "The operands and operation follow the latest applicable conditions. A batch total divided by its positive count supports this line's unit price unless different prices are stated. A historical price alone does not invalidate current operands; the result need not appear verbatim.",
+            }
         
         if path.endswith("].description") and key.endswith("::value_wrong"):
             criteria = {

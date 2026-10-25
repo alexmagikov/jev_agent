@@ -137,14 +137,16 @@ def _has_whole_unit_source(
     """Точная форма в указанных репликах, не часть слова/единицы; перед ней допустимо число.
 
     Проверка только лексическая: актуальность и принадлежность позиции оценивает Jev.
-    Точка после короткой единицы может быть пунктуацией предложения, поэтому здесь
-    она не объявляется частью сокращения автоматически.
+    У сокращений вроде «шт.» точка сохраняется как часть обозначения.
+    После символов вроде «кг» и полных слов точка может завершать предложение.
     """
     if not unit.strip():
         return False
     # Слева запрещены буквы/подчёркивание, но разрешена цифра (2м, 2,5кг).
     # Справа запрещены любые word-символы, включая цифры/степени (м != м2/м²).
-    pattern = re.compile(rf"(?<![^\W\d]){re.escape(unit)}(?!\w)")
+    dotted_abbreviations = {"шт", "компл", "уп", "упак", "кор", "пач", "рул", "наб", "ед", "экз"}
+    ending = r"(?![\w.])" if unit.split()[-1].casefold() in dotted_abbreviations else r"(?!\w)"
+    pattern = re.compile(rf"(?<![^\W\d]){re.escape(unit)}{ending}")
     return any(pattern.search(indexed[source.message_id].text) for source in sources)
 
 
@@ -326,6 +328,32 @@ def prepare_fields(
     model = InvoiceFields if document_type == "invoice_draft" else TransferFields
     if set(proposal.fields) != set(model.model_fields):
         raise ExtractionError("Предложение должно содержать ровно все поля выбранного шаблона")
+
+    # Проверяем все источники до расчётов, чтобы один ремонт получил все повреждённые пути.
+    sources = []
+    for name, field in proposal.fields.items():
+        sources.extend((source, f"{name}.evidence[{index}]") for index, source in enumerate(field.evidence))
+        plans = [(f"{name}.calculation", field.calculation)]
+        if name == "items" and isinstance(field.value, list):
+            for index, item in enumerate(field.value):
+                plans.extend((f"items[{index}].{plan_name}", getattr(item, plan_name))
+                             for plan_name in ("quantity_calculation", "unit_price_calculation"))
+        for path, plan in plans:
+            if plan is not None:
+                sources.extend((operand.source, f"{path}.operands[{index}].source")
+                               for index, operand in enumerate(plan.operands))
+    
+    source_errors = []
+    for source, path in sources:
+        try:
+            _check_source(source, indexed, path=path)
+        except ExtractionError as error:
+            source_errors.append(error)
+    if source_errors:
+        raise ExtractionError(
+            "\n".join(str(error) for error in source_errors), code="invalid_source",
+            repair_paths=tuple(path for error in source_errors for path in error.repair_paths),
+        )
     
     fields: dict[str, dict] = {}
     calculated: set[str] = set()
@@ -348,8 +376,6 @@ def prepare_fields(
         return value
 
     for name, field in proposal.fields.items():
-        for index, source in enumerate(field.evidence):
-            _check_source(source, indexed, path=f"{name}.evidence[{index}]")
         if field.status != "fillable" and field.value is not None:
             raise ExtractionError(f"{name}: незаполняемое поле должно иметь value=null", repair_paths=(name,))
         if field.status in ("fillable", "invalid", "ambiguous") and not field.evidence:
