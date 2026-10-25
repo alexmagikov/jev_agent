@@ -37,6 +37,15 @@ class SourceQuote(DocumentSchema):
     quote: str = Field(min_length=1)
 
 
+class SourceFragmentSelection(DocumentSchema):
+    path: str = Field(min_length=1)
+    fragment_id: str | None
+
+
+class SourceQuoteRepair(DocumentSchema):
+    selections: list[SourceFragmentSelection] = Field(min_length=1)
+
+
 class Operand(DocumentSchema):
     name: str = Field(pattern=r"^[a-z][a-z0-9_]*$", max_length=40)
     source: SourceQuote

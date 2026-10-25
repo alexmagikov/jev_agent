@@ -3,7 +3,8 @@
 import re
 
 from src.cases.document_type import DocumentMessage
-from src.schemas.extraction_schemas import ExtractionError, ExtractionProposal, SourceQuote
+from src.extraction import _NUMBERS
+from src.schemas.extraction_schemas import ExtractionError, ExtractionProposal, SourceQuote, SourceFragmentSelection
 
 
 _ATTRIBUTE_PATH = re.compile(r"items\[(0|[1-9][0-9]*)\]\.(description|quantity|unit|unit_price_rub)")
@@ -57,6 +58,46 @@ def source_repair_context(
             continue
         result.append({"path": path, "message_id": source.message_id,
                        "invalid_quote": source.quote, "source_text": message.text})
+    return result
+
+
+def quote_fragment_options(context: list[dict[str, str]]) -> list[dict]:
+    """Готовые дословные фрагменты; операндам предлагаются только числовые токены."""
+    result = []
+    for index, source in enumerate(context):
+        text = source["source_text"]
+        if ".operands[" in source["path"]:
+            fragments = [match.group() for match in _NUMBERS.finditer(text)]
+        else:
+            fragments = [part.strip() for part in re.split(r"(?<=[.!?;])\s+|[\r\n]+", text) if part.strip()]
+            # Полная реплика остаётся вариантом для связи сведений из разных предложений.
+            fragments.append(text)
+        unique = list(dict.fromkeys(fragments))
+        result.append({"path": source["path"], "message_id": source["message_id"], "fragments": [
+            {"fragment_id": f"q{index}f{number}", "text": fragment}
+            for number, fragment in enumerate(unique)
+        ]})
+    return result
+
+
+def apply_quote_fragment_selections(
+    base: ExtractionProposal, options: list[dict], selections: list[SourceFragmentSelection],
+) -> ExtractionProposal:
+    """Копирует выбранные фрагменты, не принимая от LLM новых текстов или значений."""
+    by_path = {entry["path"]: entry for entry in options}
+    if len(selections) != len(by_path) or {choice.path for choice in selections} != set(by_path):
+        raise ExtractionError("Ремонт цитат вернул неполный или неожиданный набор путей", code="invalid_source")
+    result = base.model_copy(deep=True)
+    sources = _source_parts(result)
+    for choice in selections:
+        entry = by_path[choice.path]
+        fragments = {fragment["fragment_id"]: fragment["text"] for fragment in entry["fragments"]}
+        if choice.fragment_id is None or choice.fragment_id not in fragments:
+            raise ExtractionError("Ремонт цитаты не выбрал допустимый фрагмент", code="invalid_source")
+        source, part, _ = sources[choice.path]
+        if part != "quote" or source.message_id != entry["message_id"]:
+            raise ExtractionError("Ремонт цитаты не может менять её источник", code="invalid_source")
+        source.quote = fragments[choice.fragment_id]
     return result
 
 
