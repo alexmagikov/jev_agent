@@ -123,10 +123,9 @@ INVOICE_SUBJECT_RULE = (
 )
 
 ITEM_UNIT_RULE = (
-    "Explicit measurement/packaging units (штук, кг, часов, коробок, комплекта): copy the stated "
-    "form (шт. stays шт.); no separate unit label is needed. A product name is not a unit: 'товар «Подарок»: "
-    "2 комплекта' has unit=комплекта, but '2 консультации' has quantity=2, unit=null. "
-    "A name alone never implies a unit."
+    "Units (e.g. 2 комплекта): copy this line's latest stated form (шт. stays шт.). Prefer the quantity's unit: "
+    "'4 часа по 2400 рублей за час' -> часа. Use the price's unit only if no quantity unit is stated. "
+    "No separate unit label is needed. A product name is not a unit ('2 консультации' -> null). No unit -> null."
 )
 
 ITEM_QUANTITY_RULE = (
