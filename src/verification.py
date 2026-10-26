@@ -103,6 +103,10 @@ _STATUS_RULE = (
 
 
 _SEMANTIC_CRITERIA = {
+    "status_wrong": {
+        "true": "The current status is wrong: the latest applicable user data require a different status among fillable, missing, invalid and ambiguous.",
+        "false": "The status is justified. A wrong value or citation under the same correct status belongs to another check.",
+    },
     "missing_supported": {
         "true": "A current unambiguous usable value for this field was omitted.",
         "false": "No current unambiguous usable value is omitted; null is justified.",
@@ -128,6 +132,15 @@ def _build_verification_checks(fields: PreparedFields) -> dict[str, str]:
     questions = {}
     for name, field in fields.model_dump(mode="json").items():
         path = f"`{name}`"
+        questions[f"{name}::status_wrong"] = (
+            f"Does the current status in instructions.field.status for {path} contradict the latest "
+            "applicable user data? Judge status only, not value correctness. missing means no current "
+            "applicable data; invalid means supplied but unusable data; ambiguous means unresolved "
+            "alternatives between usable values; fillable means supported usable data, including "
+            "a justified calculation. Explicit malformed data is not missing. Respect ownership, "
+            "withdrawals, corrections and the supplied field-specific rules."
+        )
+        
         if field["status"] == "fillable":
             checks = {
                 "unsupported": f"Is the value of {path} unsupported by its cited user messages?",
@@ -379,7 +392,8 @@ def build_verification_questions(
         }
 
         format_check = requisite_format_context(name, raw["value"] if raw is not None else None)
-        if format_check is not None and current["status"] == "fillable":
+        if format_check is not None and (current["status"] == "fillable" or (
+                key.endswith("::status_wrong") and "matches_format" in format_check)):
             claim["format_check"] = format_check
         
         if source_candidates is not None and key.endswith(("::missing_supported", "::unresolved_alternatives")):
@@ -400,7 +414,7 @@ def build_verification_questions(
                 for item in raw["value"]
             ]
 
-        criteria = _SEMANTIC_CRITERIA[key.split("::", 1)[1]] if current["status"] != "fillable" else {
+        criteria = _SEMANTIC_CRITERIA[key.split("::", 1)[1]] if current["status"] != "fillable" or key.endswith("::status_wrong") else {
             "true": "Yes. The specific error in instructions.question is present.",
             "false": "No. The specific error is absent; unrelated errors do not count.",
         }
@@ -438,7 +452,8 @@ def build_verification_questions(
             instructions={"question": question, "field": claim, "rules": [part for part in
                           (_FIELD_RULES.get(name), VAT_MODE_RULE if name == "vat_rate_percent" else "",
                            item_rules, semantic_rule, quoted_name_rule,
-                           _STATUS_RULE if format_check is not None and current["status"] != "fillable" else "") if part]},
+                           _STATUS_RULE if format_check is not None and current["status"] != "fillable"
+                           and not key.endswith("::status_wrong") else "") if part]},
             criteria=criteria,
         )
         
