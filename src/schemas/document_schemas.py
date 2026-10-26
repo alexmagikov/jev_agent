@@ -38,6 +38,8 @@ class FieldResult[ValueT](DocumentSchema):
     def validate_value_status(self) -> FieldResult[ValueT]:
         if self.status == "fillable" and self.value is None:
             raise ValueError("При status='fillable' значение не может быть null")
+        if self.status == "fillable" and isinstance(self.value, str) and not self.value.strip():
+            raise ValueError("При status='fillable' строка не может быть пустой или состоять из пробелов")
         if self.status != "fillable" and self.value is not None:
             raise ValueError("Незаполняемое поле должно содержать value=null")
         return self

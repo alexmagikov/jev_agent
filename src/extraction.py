@@ -131,6 +131,59 @@ def _has_whole_numeric_source(
     return False
 
 
+_EMAIL_PARTS = re.compile(r'''[^\s<>()\[\]{}«»“”‘’",;:!?]+''')
+_CARD_MASK_CHARS = r"*xXхХ•●·∙×_"
+_CARD_SEPARATOR = r"[\s\-‐‑–]+"
+_CARD_MASK_GROUP = rf"[0-9]*[{_CARD_MASK_CHARS}][0-9{_CARD_MASK_CHARS}]*"
+_CARD_PARTS = re.compile(
+    rf"(?<![\w{_CARD_MASK_CHARS}])(?:"
+    rf"(?:[0-9]+{_CARD_SEPARATOR})*"
+    rf"(?:{_CARD_MASK_GROUP}{_CARD_SEPARATOR})*{_CARD_MASK_GROUP}"
+    # После слитной маски ****9090 следующее число уже не часть карты.
+    rf"(?:(?<=[{_CARD_MASK_CHARS}]){_CARD_SEPARATOR}[0-9]+)?"
+    rf"|[0-9]+(?:{_CARD_SEPARATOR}[0-9]+)*)(?![\w{_CARD_MASK_CHARS}])"
+)
+
+
+def _has_whole_contact_source(
+    name: str, value: str, sources: list[SourceQuote], indexed: dict[str, DocumentMessage],
+) -> bool:
+    """Целый email/шаблон карты в цитате; границы берутся из исходной реплики.
+
+    Это проверка копирования, а не принадлежности или актуальности реквизита.
+    Формат email проверяется отдельно, поэтому исходный ошибочный адрес не теряется.
+    """
+    is_email = name == "recipient_email"
+    for source in sources:
+        text = indexed[source.message_id].text
+        spans = []
+        for match in (_EMAIL_PARTS if is_email else _CARD_PARTS).finditer(text):
+            start, end = match.span()
+            if is_email:
+                # Апостроф внутри адреса сохраняется; парные внешние — кавычки.
+                if text[start:end].startswith("'") and text[start:end].endswith("'") and end - start > 1:
+                    start, end = start + 1, end - 1
+                spans.append((start, end))
+                # Точка после адреса может завершать предложение.
+                end = start + len(text[start:end].rstrip("."))
+            if end > start:
+                spans.append((start, end))
+        for quote in re.finditer(re.escape(source.quote), text):
+            contained = [(start, end) for start, end in spans
+                         if quote.start() <= start and end <= quote.end()]
+            if any(text[start:end] == value for start, end in contained):
+                return True
+            if is_email and _invalid_format(name, value):
+                # Некорректный адрес может содержать пробелы. Разрешаем его целиком,
+                # но не отрезанный префикс/суффикс исходного адреса.
+                starts = {start for start, _ in contained}
+                ends = {end for _, end in contained}
+                for match in re.finditer(re.escape(value), text):
+                    if match.start() in starts and match.end() in ends:
+                        return True
+    return False
+
+
 def _has_whole_unit_source(
     unit: str, sources: list[SourceQuote], indexed: dict[str, DocumentMessage],
 ) -> bool:
@@ -432,8 +485,21 @@ def prepare_fields(
 
         if value is None:
             raise ExtractionError(f"{name}: у заполняемого поля нет значения или расчёта", code="missing_value", repair_paths=(name,))
+        if isinstance(value, str) and not value.strip():
+            raise ExtractionError(f"{name}: заполняемая строка не может быть пустой или состоять из пробелов",
+                                  code="missing_value", repair_paths=(name,))
         if name in exact_fields and (not isinstance(value, str) or not any(value in q for q in quotes)):
             raise ExtractionError(f"{name}: реквизит должен дословно присутствовать в источнике", repair_paths=(name,))
+        if name in {"recipient_email", "destination_card_masked"} and not _has_whole_contact_source(
+            name, value, proposal.fields[name].evidence, indexed,
+        ):
+            raise ExtractionError(
+                f"{name}: скопируй реквизит целиком из исходного сообщения; "
+                "нельзя обрезать адрес или маску в значении либо цитате. "
+                "Если исходный email неверного формата, используй invalid, value=null "
+                "и дословную цитату проблемного реквизита.",
+                code="invalid_source", repair_paths=(name,),
+            )
         if name in {"recipient_inn", "recipient_account", "recipient_bik"} and not _has_whole_numeric_source(
             value, proposal.fields[name].evidence, indexed,
         ):

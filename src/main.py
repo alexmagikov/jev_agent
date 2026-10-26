@@ -1,8 +1,8 @@
 import asyncio
 import json
 from argparse import ArgumentParser
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from time import perf_counter
 from typing import Literal
 
@@ -17,6 +17,7 @@ from src.metrics import FieldMetrics, MetricsReport, calculate_metrics
 from src.pipeline import PipelineError, PipelineRateLimitError, classify_document, process_document
 from src.schemas.schemas import DocumentType, SplitFilter, DataSplit, Probability
 from src.settings import CLMSettings, JeffSettings, DecisionModelSettings, LayaSettings, LLMSettings, PipelineSettings
+from src.run_artifacts import RunArtifacts, input_fingerprint, public_settings, write_errors, write_results
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LABEL_ADAPTER = TypeAdapter(DocumentResult)
@@ -118,30 +119,6 @@ def load_labels(path: Path, case_ids: set[str]) -> list[dict[str, object]]:
         raise ValueError(f"В {path} нет разметки для кейсов: {missing}")
 
     return labels
-
-
-def write_results(results: list[DocumentTypeResult] | list[DocumentResult], path: Path) -> None:
-    """Сохраняет по одному результату на строку в формате JSONL."""
-
-    contents = "\n".join(
-        result.model_dump_json(exclude_none=isinstance(result, DocumentTypeResult))
-        for result in results
-    )
-    _write_text_atomic(contents + ("\n" if contents else ""), path)
-
-
-def _write_text_atomic(contents: str, path: Path) -> None:
-    """Заменяет один файл целиком, не оставляя оборванный JSONL при ошибке записи."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(prefix=".jev-checkpoint-", dir=path.parent) as directory:
-        pending = Path(directory) / "checkpoint.jsonl"
-        pending.write_text(contents, encoding="utf-8")
-        pending.replace(path)
-
-
-def write_errors(errors: list[dict[str, str]], path: Path) -> None:
-    contents = "".join(json.dumps(error, ensure_ascii=False) + "\n" for error in errors)
-    _write_text_atomic(contents, path)
 
 
 async def classify_cases(
@@ -277,7 +254,7 @@ async def main(
     fail_fast: bool = False,
     verifier: Literal["jeff", "clm", "jev", "laya", "decision"] = "jeff",
     case_ids: list[str] | None = None,
-) -> None:
+) -> Path:
     if mode not in ("classification", "full", "llm-only"):
         raise ValueError("Неизвестный режим обработки")
     if verifier not in ("jeff", "clm", "jev", "laya", "decision"):
@@ -291,11 +268,13 @@ async def main(
         "llm-only": DEFAULT_LLM_ONLY_OUTPUT_PATH,
     }
     output_path = output_path or default_outputs[mode]
+    if not output_path.name or output_path.is_dir() or output_path.name in {"config.json", "metrics.json", "run.json"}:
+        raise ValueError("--output должен задавать имя файла результата, отличное от config.json, metrics.json и run.json")
     errors_path = output_path.with_name(output_path.stem + ".errors.jsonl")
     protected_paths = {input_path.resolve(), labels_path.resolve()}
-    if output_path.resolve() in protected_paths or (document_mode and errors_path.resolve() in protected_paths):
+    if output_path.resolve() in protected_paths or errors_path.resolve() in protected_paths:
         raise ValueError("Путь результата не должен совпадать с датасетом или разметкой")
-    if document_mode and errors_path.resolve() == output_path.resolve():
+    if errors_path.resolve() == output_path.resolve():
         raise ValueError("Пути результата и ошибок не должны совпадать")
 
     # Обнаружение ошибок до платных запросов
@@ -331,17 +310,80 @@ async def main(
             decision_settings = CLMSettings()
             client = AsyncCLM(decision_settings)
         else:
-            settings = DecisionModelSettings()
-            options = decision_sdk_options(settings)
-            client = DecisionModelClient(api_key=options.pop("api_key"), sdk_options=options, name=settings.model)
-            verifier_name = settings.model if verifier == "decision" else "Jev"
+            decision_settings = DecisionModelSettings()
+            options = decision_sdk_options(decision_settings)
+            client = DecisionModelClient(api_key=options.pop("api_key"), sdk_options=options, name=decision_settings.model)
+            verifier_name = decision_settings.model if verifier == "decision" else "Jev"
+
+    pipeline_settings = PipelineSettings() if document_mode else None
+    llm_settings = LLMSettings() if document_mode else None
+    wrong_threshold = getattr(decision_settings, "wrong_threshold", pipeline_settings.wrong_threshold) if document_mode else None
+    run = RunArtifacts(output_path, {
+        "mode": mode, "verifier": verifier if mode != "llm-only" else None,
+        "input": input_fingerprint(input_path), "labels": input_fingerprint(labels_path),
+        "split": split, "limit": limit, "case_ids": [case.case_id for case in cases],
+        "debug": debug, "fail_fast": fail_fast, "requested_output": str(output_path.resolve()),
+        "llm": public_settings(llm_settings), "decision": public_settings(decision_settings),
+        "max_attempts": pipeline_settings.max_attempts if pipeline_settings else None,
+        "wrong_threshold": wrong_threshold,
+    })
+    
+    output_path, errors_path = run.output, run.errors
+    results = []
+    errors: list[dict[str, str]] = []
+    labels_by_id = {label["case_id"]: label for label in labels}
+    extractor = None
+
+    def checkpoint(status="running", failure_kind=None):
+        processed = {row.case_id for row in results} | {error["case_id"] for error in errors}
+        evaluated = [label for label in labels if label["case_id"] in processed]
+        report = calculate_metrics(evaluated, [row.model_dump(mode="json") for row in results])
+        decision_usage = getattr(client, "usage", None)
+        run.checkpoint(results, errors, report, status=status, failure_kind=failure_kind, usage={
+            "llm": asdict(extractor.usage) if extractor is not None else None,
+            "decision": asdict(decision_usage) if is_dataclass(decision_usage) else None,
+            "elapsed_seconds": perf_counter() - run_started,
+        })
+        return report
+
+    checkpoint()
+    print(f"Каталог запуска: {run.directory}", flush=True)
+    print(f"Результат: {output_path}", flush=True)
+    print(f"Ошибки: {errors_path}", flush=True)
+    print(f"Метрики: {run.metrics}", flush=True)
+
+    async def process_cases():
+        nonlocal stopped_error
+        for index, case in enumerate(cases, start=1):
+            print(f"[{index}/{len(cases)}] {case.case_id}", flush=True)
+            if debug and document_mode:
+                print(f"[{case.case_id}] Ожидаемый результат из labels.jsonl (не передаётся модели):", flush=True)
+                print(json.dumps(labels_by_id[case.case_id], ensure_ascii=False, indent=2), flush=True)
+            try:
+                if document_mode:
+                    result = await process_document(
+                        case.case_id, case.messages, client, extractor,
+                        max_attempts=pipeline_settings.max_attempts,
+                        wrong_threshold=wrong_threshold, debug=debug, use_verifier=mode == "full",
+                    )
+                else:
+                    result = (await classify_cases([case], client))[0]
+            except PipelineError as error:
+                # Ошибки программы и отмена не превращаются в ошибки данных кейса.
+                errors.append({"case_id": case.case_id, "error": str(error)})
+                print(f"[{case.case_id}] Ошибка кейса: {error}", flush=True)
+                if fail_fast or isinstance(error, PipelineRateLimitError):
+                    stopped_error = error
+            else:
+                results.append(result)
+                if debug and document_mode:
+                    print(f"[{case.case_id}] Итог после проверок:", flush=True)
+                    print(result.model_dump_json(indent=2), flush=True)
+            checkpoint()
+            if stopped_error is not None:
+                break
 
     if document_mode:
-        pipeline_settings = PipelineSettings()
-        wrong_threshold = decision_settings.wrong_threshold if decision_settings else pipeline_settings.wrong_threshold
-        results = []
-        errors: list[dict[str, str]] = []
-        labels_by_id = {label["case_id"]: label for label in labels}
         if mode == "llm-only":
             print("Режим llm-only: классификация LLM → извлечение LLM → Python; без внешнего верификатора.", flush=True)
         else:
@@ -352,72 +394,44 @@ async def main(
                 print(f"Laya: max_len={decision_settings.max_len}, head_max_len={decision_settings.head_max_len}; длинный контекст может усекаться моделью.", flush=True)
         if debug:
             print("DEBUG: ответы модели и эталоны могут содержать реквизиты; не публикуйте вывод.", flush=True)
-        async with AsyncLLMExtractor(LLMSettings(), debug=debug) as extractor:
-            try:
-                for index, case in enumerate(cases, start=1):
-                    print(f"[{index}/{len(cases)}] {case.case_id}", flush=True)
-                    if debug:
-                        print(f"[{case.case_id}] Ожидаемый результат из labels.jsonl (не передаётся модели):", flush=True)
-                        print(json.dumps(labels_by_id[case.case_id], ensure_ascii=False, indent=2), flush=True)
-
-                    try:
-                        result = await process_document(
-                            case.case_id, case.messages, client, extractor,
-                            max_attempts=pipeline_settings.max_attempts,
-                            wrong_threshold=wrong_threshold,
-                            debug=debug,
-                            use_verifier=mode == "full",
-                        )
-                    except PipelineError as error:
-                        # Не ловим Exception: ошибки программы и отмена должны быть видны.
-                        errors.append({"case_id": case.case_id, "error": str(error)})
-                        print(f"[{case.case_id}] Ошибка кейса: {error}", flush=True)
-                        if fail_fast or isinstance(error, PipelineRateLimitError):
-                            write_errors(errors, errors_path)
-                            stopped_error = error
-                            break
-                    else:
-                        results.append(result)
-                        if debug:
-                            print(f"[{case.case_id}] Итог после проверок:", flush=True)
-                            print(result.model_dump_json(indent=2), flush=True)
-                    # Снимок только текущего прогона; не смешиваем его с прежними записями.
-                    write_results(results, output_path)
-                    write_errors(errors, errors_path)
-            finally:
-                print_llm_usage(extractor.usage)
-                if client is not None:
-                    print_decision_usage(getattr(client, "usage", None), name=verifier_name)
-                print(f"Полное время прогона ({mode}): {perf_counter() - run_started:.2f} с", flush=True)
-    else:
-        results = await classify_cases(cases, client)
-        write_results(results, output_path)
-
-    evaluated_labels = labels
-    if stopped_error is not None:
-        attempted_ids = {result.case_id for result in results} | {error["case_id"] for error in errors}
-        evaluated_labels = [label for label in labels if label["case_id"] in attempted_ids]
-    report = calculate_metrics(
-        evaluated_labels,
-        [result.model_dump(mode="json") for result in results],
-    )
-
-    print(f"Обработано кейсов: {len(evaluated_labels)}")
-    if document_mode:
-        print(f"Успешно: {len(results)}; с ошибкой: {len(errors)}")
-        print(f"Ошибки: {errors_path}")
-        if stopped_error is not None:
-            print(f"Прогон остановлен. Не обработано: {len(cases) - len(evaluated_labels)}")
-            print("Частичные метрики: только обработанные кейсы, включая неуспешные.")
+    try:
+        if document_mode:
+            async with AsyncLLMExtractor(llm_settings, debug=debug) as extractor:
+                await process_cases()
         else:
-            print("Метрики учитывают все выбранные кейсы, включая неуспешные.")
-    if stopped_error is not None and not results:
-        print(f"Новых результатов нет; файл {output_path} не изменялся.")
+            await process_cases()
+    except BaseException as error:
+        # Сохраняем отметку о прерывании, затем пробрасываем исходную ошибку.
+        # При ошибке файловой системы повторная запись может тоже упасть.
+        if not isinstance(error, OSError):
+            try:
+                checkpoint("interrupted", type(error).__name__)
+            except OSError:
+                error.add_note("Не удалось сохранить отметку о прерывании запуска")
+        raise
+    finally:
+        if document_mode:
+            if extractor is not None:
+                print_llm_usage(extractor.usage)
+            if client is not None:
+                print_decision_usage(getattr(client, "usage", None), name=verifier_name)
+            print(f"Полное время прогона ({mode}): {perf_counter() - run_started:.2f} с", flush=True)
+
+    report = checkpoint("stopped" if stopped_error is not None else "completed",
+                        type(stopped_error).__name__ if stopped_error is not None else None)
+
+    print(f"Обработано кейсов: {report.total_cases}")
+    print(f"Успешно: {len(results)}; с ошибкой: {len(errors)}")
+    if stopped_error is not None:
+        print(f"Прогон остановлен. Не обработано: {len(cases) - report.total_cases}")
+        print("Частичные метрики: только обработанные кейсы, включая неуспешные.")
     else:
-        print(f"Результат: {output_path}")
+        print("Метрики учитывают все выбранные кейсы, включая неуспешные.")
+    print(f"Результат: {output_path}")
     print_metrics(report)
     if stopped_error is not None:
         raise stopped_error
+    return output_path
 
 
 def build_parser() -> ArgumentParser:
@@ -426,8 +440,9 @@ def build_parser() -> ArgumentParser:
     )
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT_PATH)
     parser.add_argument("--output", type=Path, default=None,
-                        help="По умолчанию outputs/document_types.jsonl, predictions.jsonl (full) "
-                             "или predictions.llm-only.jsonl (llm-only).")
+                        help="Имя результата; каждый запуск создаёт <имя>.runs/<run_id>/ рядом. "
+                             "По умолчанию outputs/document_types.jsonl, predictions.jsonl (full) "
+                             "или predictions.llm-only.jsonl (llm-only); фактический путь печатается в консоли.")
     parser.add_argument("--labels", type=Path, default=DEFAULT_LABELS_PATH)
     parser.add_argument("--mode", choices=("classification", "full", "llm-only"), default="classification")
     parser.add_argument("--verifier", choices=("jeff", "clm", "jev", "laya", "decision"), default="jeff",
@@ -443,7 +458,7 @@ def build_parser() -> ArgumentParser:
     )
     parser.add_argument(
         "--fail-fast", action="store_true",
-        help="В full/llm-only остановиться на первой ошибке кейса; по умолчанию продолжать остальные.",
+        help="Остановиться на первой ошибке кейса; по умолчанию продолжать остальные.",
     )
     parser.add_argument(
         "--split",
