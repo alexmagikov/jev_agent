@@ -13,7 +13,10 @@ PERMITTED_ALIASES = {
 TRANSFER_ALIAS_RULES = {
     name: f"Permitted equivalent forms for {document_type}.{name}: "
     + "; ".join(" / ".join(group) for group in groups)
-    + ". Do not flag a permitted form as unsupported or incorrect."
+    + ". Equivalent spelling alone is exempt only if current applicable user messages "
+    "support the same bank or account type within that listed group. "
+    "The list is not evidence or a whitelist: still check source support, ownership, "
+    "selection, unresolved alternatives, withdrawals and later corrections."
     for (document_type, name), groups in PERMITTED_ALIASES.items()
 }
 
@@ -85,7 +88,8 @@ ITEM_DESCRIPTION_SEMANTIC_RULE = (
     "Check product/service identity and stated characteristics only. Singular nominative "
     "normalization ('стулья' -> 'стул') preserves identity; number/case changes alone are not errors. "
     "Do not judge quantity, unit or price. "
-    "A different product, invented characteristics or a changed quoted product name is an error."
+    "A different product, invented characteristics or a quoted product name changed beyond "
+    "the permitted removal of external labels and outer quotation delimiters is an error."
 )
 
 QUOTED_PRODUCT_NAME_RULE = (

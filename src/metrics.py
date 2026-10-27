@@ -12,6 +12,8 @@ type FieldKey = tuple[str, str, str]
 
 SUPPORTED_DOCUMENT_TYPES = ("invoice_draft", "transfer_draft")
 ALL_DOCUMENT_TYPES = {*SUPPORTED_DOCUMENT_TYPES, "none"}
+FIELD_STATUSES = ("fillable", "missing", "invalid", "ambiguous")
+STATUS_OUTCOMES = (*FIELD_STATUSES, "no_prediction", "wrong_document_type", "absent_field")
 
 
 class FieldMetrics(BaseModel):
@@ -24,8 +26,31 @@ class FieldMetrics(BaseModel):
     recall: float
     value_accuracy: float | None
     alias_aware_value_accuracy: float | None = None
-    evidence_accuracy: float | None
-    unsupported_fill_rate: float
+    evidence_id_exact_match: float | None
+    overfill_rate: float
+    expected_values: int
+    predicted_values: int
+    correct_values: int
+    alias_aware_correct_values: int
+    value_precision: float | None
+    value_recall: float | None
+    alias_aware_value_recall: float | None
+    expected_fields: int
+    correct_statuses: int
+    correct_status_values: int
+    status_accuracy: float | None
+    field_accuracy: float | None
+    status_confusion: dict[str, dict[str, int]]
+
+    @property
+    def evidence_accuracy(self) -> float | None:
+        """Старое Python-имя; в JSON используется evidence_id_exact_match."""
+        return self.evidence_id_exact_match
+
+    @property
+    def unsupported_fill_rate(self) -> float:
+        """Старое Python-имя; это доля лишних заполнений, а не оценка доказательств."""
+        return self.overfill_rate
 
 
 class DocumentTypeMismatch(BaseModel):
@@ -40,8 +65,13 @@ class DocumentTypeMismatch(BaseModel):
 class MetricsReport(BaseModel):
     """Итог сравнения предсказаний c правильными результатами."""
 
+    metrics_version: int = 2
     total_cases: int
     predicted_cases: int
+    prediction_coverage: float | None
+    field_metrics_evaluated: bool
+    exact_document_correct: int | None
+    exact_document_accuracy: float | None
     missing_predictions: list[str]
     document_type_correct: int
     document_type_accuracy: float
@@ -53,6 +83,7 @@ class MetricsReport(BaseModel):
 def calculate_metrics(
     labels: Sequence[JsonRow],
     predictions: Sequence[JsonRow],
+    *, evaluate_fields: bool = True,
 ) -> MetricsReport:
     """Сравнивает предсказания с эталонными строками по ``case_id``.
 
@@ -62,11 +93,20 @@ def calculate_metrics(
     для ошибочно выбранного шаблона.
 
     ``value_accuracy`` использует строгое равенство JSON-значений, а
-    ``evidence_accuracy`` — равенство множеств идентификаторов сообщений.
+    ``evidence_id_exact_match`` — равенство множеств идентификаторов сообщений.
     Обе точности считаются только среди true-positive полей. Если таких полей
     нет, значение метрики равно ``None``.
     ``alias_aware_value_accuracy`` дополнительно учитывает только явно разрешённые
     варианты банка и типа счёта перевода; строгую метрику она не заменяет.
+
+    ``value_recall`` учитывает все ожидаемые заполненные значения, включая
+    пропущенные поля и результаты. ``value_precision`` — все заполненные значения
+    предсказания. ``overfill_rate`` учитывает только лишние заполнения по разметке.
+    Статусы оцениваются по всем ожидаемым полям; отсутствие результата, неверный
+    шаблон и отсутствие поля — отдельные столбцы, не status=missing.
+    Полностью верный документ совпадает по типу, набору полей, статусам и значениям;
+    evidence, derivation, confidence и текст reason в это сравнение не входят.
+    Для classification передаётся evaluate_fields=False.
     """
 
     labels_by_id = _index_rows(labels, source="labels")
@@ -93,19 +133,25 @@ def calculate_metrics(
     ]
     document_type_correct = len(labels_by_id) - len(document_type_mismatches)
 
-    label_fields = _fillable_fields(
+    label_fields = _all_fields(
         labels_by_id, 
         fields_required=True
     )
-    predicted_fields = _fillable_fields(
+    predicted_fields = _all_fields(
         predictions_by_id,
         fields_required=False,
     )
+    if not evaluate_fields:
+        label_fields, predicted_fields = {}, {}
+    predicted_types = {case_id: row["document_type"] for case_id, row in predictions_by_id.items()}
+    exact_documents = (sum(_exact_document(label, predictions_by_id.get(case_id))
+                           for case_id, label in labels_by_id.items()) if evaluate_fields else None)
 
     by_document_type = {
         document_type: _field_metrics(
             _for_document_type(label_fields, document_type),
             _for_document_type(predicted_fields, document_type),
+            predicted_types,
         )
         for document_type in SUPPORTED_DOCUMENT_TYPES
     }
@@ -113,6 +159,10 @@ def calculate_metrics(
     return MetricsReport(
         total_cases=len(labels_by_id),
         predicted_cases=len(predictions_by_id),
+        prediction_coverage=_ratio(len(predictions_by_id), len(labels_by_id)),
+        field_metrics_evaluated=evaluate_fields,
+        exact_document_correct=exact_documents,
+        exact_document_accuracy=_ratio(exact_documents, len(labels_by_id)) if evaluate_fields else None,
         missing_predictions=missing_predictions,
         document_type_correct=document_type_correct,
         document_type_accuracy=_divide(
@@ -120,7 +170,7 @@ def calculate_metrics(
             len(labels_by_id),
         ),
         document_type_mismatches=document_type_mismatches,
-        fields=_field_metrics(label_fields, predicted_fields),
+        fields=_field_metrics(label_fields, predicted_fields, predicted_types),
         by_document_type=by_document_type,
     )
 
@@ -149,11 +199,11 @@ def _index_rows(
     return indexed
 
 
-def _fillable_fields(
+def _all_fields(
     rows: Mapping[str, JsonRow],
     fields_required: bool,
 ) -> dict[FieldKey, JsonRow]:
-    fillable: dict[FieldKey, JsonRow] = {}
+    result: dict[FieldKey, JsonRow] = {}
     for case_id, row in rows.items():
         if fields_required and "fields" not in row:
             raise ValueError(f"В разметке {case_id} отсутствует объект fields")
@@ -166,10 +216,31 @@ def _fillable_fields(
         for field_name, field in fields.items():
             if not isinstance(field_name, str) or not isinstance(field, Mapping):
                 raise ValueError(f"Некорректное поле в кейсе {case_id}")
-            if field.get("status") == "fillable":
-                fillable[(case_id, document_type, field_name)] = field
+            if field.get("status") not in FIELD_STATUSES:
+                raise ValueError(f"Некорректный статус поля {case_id}.{field_name}")
+            result[(case_id, document_type, field_name)] = field
 
-    return fillable
+    return result
+
+
+def field_matches(document_type: str, name: str, expected: JsonRow, actual: JsonRow | None,
+                  *, allow_aliases: bool = False) -> bool:
+    """Общее сравнение поля для метрик и переходов парного аудита."""
+    if actual is None or actual.get("status") != expected["status"] or "value" not in actual:
+        return False
+    if allow_aliases:
+        return equivalent_field_values(document_type, name, actual["value"], expected.get("value"))
+    return actual["value"] == expected.get("value")
+
+
+def _exact_document(expected: JsonRow, actual: JsonRow | None) -> bool:
+    if actual is None or actual["document_type"] != expected["document_type"]:
+        return False
+    target, predicted = expected["fields"], actual.get("fields", {})
+    return target.keys() == predicted.keys() and all(
+        field_matches(expected["document_type"], name, field, predicted[name])
+        for name, field in target.items()
+    )
 
 
 def _for_document_type(
@@ -186,9 +257,27 @@ def _for_document_type(
 def _field_metrics(
     labels: Mapping[FieldKey, JsonRow],
     predictions: Mapping[FieldKey, JsonRow],
+    predicted_types: Mapping[str, str],
 ) -> FieldMetrics:
-    label_keys = set(labels)
-    prediction_keys = set(predictions)
+    status_confusion = {status: dict.fromkeys(STATUS_OUTCOMES, 0) for status in FIELD_STATUSES}
+    correct_statuses = correct_status_values = 0
+    for key, expected in labels.items():
+        case_id, document_type, name = key
+        actual = predictions.get(key)
+        if case_id not in predicted_types:
+            outcome = "no_prediction"
+        elif predicted_types[case_id] != document_type:
+            outcome = "wrong_document_type"
+        elif actual is None:
+            outcome = "absent_field"
+        else:
+            outcome = actual["status"]
+        status_confusion[expected["status"]][outcome] += 1
+        correct_statuses += int(outcome == expected["status"])
+        correct_status_values += int(field_matches(document_type, name, expected, actual))
+
+    label_keys = {key for key, field in labels.items() if field["status"] == "fillable"}
+    prediction_keys = {key for key, field in predictions.items() if field["status"] == "fillable"}
     true_positive_keys = label_keys & prediction_keys
 
     true_positives = len(true_positive_keys)
@@ -196,7 +285,7 @@ def _field_metrics(
     false_negatives = len(label_keys - prediction_keys)
 
     correct_values = sum(
-        predictions[key].get("value") == labels[key].get("value")
+        field_matches(key[1], key[2], labels[key], predictions[key])
         for key in true_positive_keys
     )
     correct_evidence = sum(
@@ -204,7 +293,7 @@ def _field_metrics(
         for key in true_positive_keys
     )
     alias_aware_correct_values = sum(
-        equivalent_field_values(key[1], key[2], predictions[key].get("value"), labels[key].get("value"))
+        field_matches(key[1], key[2], labels[key], predictions[key], allow_aliases=True)
         for key in true_positive_keys
     )
 
@@ -212,6 +301,19 @@ def _field_metrics(
     actual_positive_count = true_positives + false_negatives
 
     return FieldMetrics(
+        expected_fields=len(labels),
+        correct_statuses=correct_statuses,
+        correct_status_values=correct_status_values,
+        status_accuracy=_ratio(correct_statuses, len(labels)),
+        field_accuracy=_ratio(correct_status_values, len(labels)),
+        status_confusion=status_confusion,
+        expected_values=actual_positive_count,
+        predicted_values=predicted_positive_count,
+        correct_values=correct_values,
+        alias_aware_correct_values=alias_aware_correct_values,
+        value_precision=_ratio(correct_values, predicted_positive_count),
+        value_recall=_ratio(correct_values, actual_positive_count),
+        alias_aware_value_recall=_ratio(alias_aware_correct_values, actual_positive_count),
         true_positives=true_positives,
         false_positives=false_positives,
         false_negatives=false_negatives,
@@ -223,10 +325,10 @@ def _field_metrics(
         alias_aware_value_accuracy=(
             alias_aware_correct_values / true_positives if true_positives else None
         ),
-        evidence_accuracy=(
+        evidence_id_exact_match=(
             correct_evidence / true_positives if true_positives else None
         ),
-        unsupported_fill_rate=_divide(
+        overfill_rate=_divide(
             false_positives,
             predicted_positive_count,
         ),
@@ -244,3 +346,7 @@ def _evidence(field: JsonRow) -> set[str]:
 
 def _divide(numerator: int, denominator: int) -> float:
     return numerator / denominator if denominator else 0.0
+
+
+def _ratio(numerator: int, denominator: int) -> float | None:
+    return numerator / denominator if denominator else None

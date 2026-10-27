@@ -308,11 +308,23 @@ def _build_verification_checks(fields: PreparedFields) -> dict[str, str]:
                         continue
                     if attribute == "description":
                         questions[f"items[{index}].{attribute}::value_wrong"] = (
-                            f"Does {path} name a different product/service or add unsupported "
-                            "characteristics for this single line item compared with the latest user request? "
+                            f"Does {path} name a different product/service from every currently requested item "
+                            "in the user messages after corrections and withdrawals? Match this single line item to "
+                            "one requested item regardless of source order, not to the whole order. "
+                            "instructions.field.extracted_items is candidate context, not evidence. "
+                            "Judge list completeness only in items::incomplete; other products belong in other lines. "
+                            "Judge characteristics in their separate check. "
                             "Singular nominative normalization preserves identity; "
                             "ignore meaning-preserving number/case changes; "
                             "do not judge quantity, unit or price here."
+                        )
+                        questions[f"items[{index}].{attribute}::unsupported_characteristics"] = (
+                            f"Does {path} contain unsupported characteristics or a changed quoted product name "
+                            "for the corresponding requested item after corrections and withdrawals? "
+                            "instructions.field.extracted_items is candidate context, not evidence. "
+                            "Judge product identity in its separate check and list completeness only in items::incomplete; "
+                            "other requested items need not appear in this description. "
+                            "Ignore meaning-preserving number/case changes; do not judge quantity, unit or price here."
                         )
                         continue
 
@@ -405,6 +417,9 @@ def build_verification_questions(
             claim["meaning"] = attribute_meanings[attribute]
             claim["item"] = current["value"][index]
             claim["value"] = claim["item"][attribute]
+            if attribute == "description" and claim["value"] is not None:
+                claim["item_index"] = index
+                claim["extracted_items"] = current["value"]
             calculation_name = {"quantity": "quantity_calculation", "unit_price_rub": "unit_price_calculation"}.get(attribute)
             claim["calculation"] = raw["value"][index].get(calculation_name) if raw is not None and calculation_name else None
             claim.pop("derivation")
@@ -433,8 +448,13 @@ def build_verification_questions(
         
         if path.endswith("].description") and key.endswith("::value_wrong"):
             criteria = {
-                "true": "The description names a different product/service or adds unsupported characteristics.",
-                "false": "Same requested product/service, including singular nominative normalization; meaning-preserving number/case changes and unknown quantity/unit/price are not description errors.",
+                "true": "The description names a different product/service; none of the currently requested items supports this product identity.",
+                "false": "Same requested product/service as one active requested item, including singular nominative normalization, meaning-preserving number/case changes and permitted quoted-name normalization. Other products may be in other lines; characteristics and unknown quantity/unit/price are separate checks.",
+            }
+        if path.endswith("].description") and key.endswith("::unsupported_characteristics"):
+            criteria = {
+                "true": "This description adds or changes characteristics or a quoted product name not supported for the corresponding requested item, beyond the permitted quoted-name normalization.",
+                "false": "All stated characteristics and quoted names are supported, or none are stated. Removing external labels and outer quotes under the shared rule is not a name change; inner text, embedded quotes and labels inside the name must remain. Product identity, list completeness, grammatical normalization and unknown quantity/unit/price do not trigger this check.",
             }
         if key.endswith("::superseded") and current["status"] == "fillable":
             criteria = {
@@ -447,7 +467,10 @@ def build_verification_questions(
                 "false": "No explicit current VAT percentage is omitted; no_vat alone and calculated rates do not count.",
             }
 
-        quoted_name_rule = QUOTED_PRODUCT_NAME_RULE if key == "subject::noncanonical" else ""
+        checks_quoted_name = name == "subject" or (
+            name == "items" and (path == "items" or path.endswith("].description"))
+        )
+        quoted_name_rule = QUOTED_PRODUCT_NAME_RULE if checks_quoted_name else ""
         questions[key] = NoulQuestion(
             instructions={"question": question, "field": claim, "rules": [part for part in
                           (_FIELD_RULES.get(name), VAT_MODE_RULE if name == "vat_rate_percent" else "",

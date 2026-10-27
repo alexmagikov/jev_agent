@@ -150,6 +150,10 @@ def print_metrics(report: MetricsReport) -> None:
         f"{report.document_type_correct}/{report.total_cases} "
         f"({report.document_type_accuracy:.1%})"
     )
+    print(f"Покрытие результатами: {report.predicted_cases}/{report.total_cases} ({_percent(report.prediction_coverage)})")
+    if report.field_metrics_evaluated:
+        print(f"Полностью правильные документы: {report.exact_document_correct}/{report.total_cases} "
+              f"({_percent(report.exact_document_accuracy)})")
     if report.document_type_mismatches:
         print("\nНесовпадения по типу документа:")
         for mismatch in report.document_type_mismatches:
@@ -169,38 +173,39 @@ def print_metrics(report: MetricsReport) -> None:
             )
     else:
         print("Несовпадений по типу документа нет.")
+    if not report.field_metrics_evaluated:
+        return
     print("Метрики полей:")
     _print_field_metrics("  Все шаблоны", report.fields)
+    errors = [(expected, actual, count) for expected, columns in report.fields.status_confusion.items()
+              for actual, count in columns.items() if actual != expected and count]
+    if errors:
+        print("  Ошибки статусов (ожидалось → получено):")
+        for expected, actual, count in errors:
+            print(f"    {expected} → {actual}: {count}")
     for document_type, metrics in report.by_document_type.items():
         _print_field_metrics(f"  {document_type}", metrics)
 
 
+def _percent(value: float | None) -> str:
+    return f"{value:.1%}" if value is not None else "н/д"
+
+
 def _print_field_metrics(name: str, metrics: FieldMetrics) -> None:
-    correct_values = round(metrics.true_positives * metrics.value_accuracy) if metrics.value_accuracy is not None else 0
-    expected_values = metrics.true_positives + metrics.false_negatives
-    value_accuracy = (
-        f"{metrics.value_accuracy:.1%}"
-        if metrics.value_accuracy is not None
-        else "н/д"
-    )
-    evidence_accuracy = (
-        f"{metrics.evidence_accuracy:.1%}"
-        if metrics.evidence_accuracy is not None
-        else "н/д"
-    )
-    alias_aware_accuracy = (
-        f"{metrics.alias_aware_value_accuracy:.1%}"
-        if metrics.alias_aware_value_accuracy is not None else "н/д"
-    )
     print(
         f"{name}: \n"
         f"        precision={metrics.precision:.1%},\n"
         f"        recall={metrics.recall:.1%},\n"
-        f"        value_accuracy={value_accuracy},\n"
-        f"        верных значений из всех ожидаемых={correct_values}/{expected_values},\n"
-        f"        alias_aware_value_accuracy={alias_aware_accuracy},\n"
-        f"        evidence_accuracy={evidence_accuracy},\n"
-        f"        необоснованные заполнения={metrics.unsupported_fill_rate:.1%}\n"
+        f"        value_accuracy={_percent(metrics.value_accuracy)},\n"
+        f"        value_precision={_percent(metrics.value_precision)},\n"
+        f"        value_recall={_percent(metrics.value_recall)},\n"
+        f"        верных значений из всех ожидаемых={metrics.correct_values}/{metrics.expected_values},\n"
+        f"        alias_aware_value_accuracy={_percent(metrics.alias_aware_value_accuracy)},\n"
+        f"        alias_aware_value_recall={_percent(metrics.alias_aware_value_recall)},\n"
+        f"        status_accuracy={_percent(metrics.status_accuracy)} ({metrics.correct_statuses}/{metrics.expected_fields}),\n"
+        f"        field_accuracy={_percent(metrics.field_accuracy)} ({metrics.correct_status_values}/{metrics.expected_fields}),\n"
+        f"        совпадение наборов ID источников={_percent(metrics.evidence_id_exact_match)},\n"
+        f"        лишние заполнения={metrics.overfill_rate:.1%}\n"
         f"        (TP={metrics.true_positives}, FP={metrics.false_positives}, "
         f"FN={metrics.false_negatives})\n"
     )
@@ -337,7 +342,8 @@ async def main(
     def checkpoint(status="running", failure_kind=None):
         processed = {row.case_id for row in results} | {error["case_id"] for error in errors}
         evaluated = [label for label in labels if label["case_id"] in processed]
-        report = calculate_metrics(evaluated, [row.model_dump(mode="json") for row in results])
+        report = calculate_metrics(evaluated, [row.model_dump(mode="json") for row in results],
+                                   evaluate_fields=document_mode)
         decision_usage = getattr(client, "usage", None)
         run.checkpoint(results, errors, report, status=status, failure_kind=failure_kind, usage={
             "llm": asdict(extractor.usage) if extractor is not None else None,
