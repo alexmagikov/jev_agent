@@ -104,9 +104,10 @@ LINE_CHARGES_RULE = (
     "whole-line fee or known quantity*unit_price. Unknown quantities mean amount missing/null, not "
     "a partial sum; unclear price scope means ambiguous/null. Never infer quantity=1 from line "
     "count. Explicit batch/work fees override unit-price interpretation and may be summed without "
-    "quantity or inventing unit prices (shared fee for two lines: fee + fee). Example: "
+    "quantity or inventing unit prices. Examples: "
+    "100 for each of two lines: 100+100=200; 100 for both lines together: total=100. "
     "apples/pears at 100 each, apples=2, pears unknown: total missing; pears=3 gives 500. Entire "
-    "apple batch=100 and pear batch=150 gives 250; two entire batches at 100 gives 200."
+    "apple batch=100 and pear batch=150 gives 250."
 )
 
 INVOICE_AMOUNT_RULE = (
