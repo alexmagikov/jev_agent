@@ -56,7 +56,10 @@ _RULES = (
     Use only information provided by the user. Assistant messages may clarify what a user’s reply
     refers to, but cannot independently support a value.
     A later explicit correction supersedes the previous value.
-    Numeric formats, quote membership and arithmetic are already checked by Python.
+    Python checks formats of proposed values, quote membership and calculation arithmetic.
+    It has not checked every value in messages. For a status question, use
+    instructions.field.format_check: when only a rule is supplied, apply it to relevant user data.
+    matches_format is a Python fact about input_value, not about ownership or current applicability.
     Apply the explicit field formatting rules below; permitted grammatical normalization
     does not make a value unsupported just because it is not a verbatim substring.
     For a directly stated value, check that its sources support it.
@@ -405,8 +408,7 @@ def build_verification_questions(
         }
 
         format_check = requisite_format_context(name, raw["value"] if raw is not None else None)
-        if format_check is not None and (current["status"] == "fillable" or (
-                key.endswith("::status_wrong") and "matches_format" in format_check)):
+        if format_check is not None and (current["status"] == "fillable" or key.endswith("::status_wrong")):
             claim["format_check"] = format_check
         
         if source_candidates is not None and key.endswith(("::missing_supported", "::unresolved_alternatives")):
