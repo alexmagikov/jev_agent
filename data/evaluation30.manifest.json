@@ -1,0 +1,338 @@
+{
+  "dataset_version": 1,
+  "name": "evaluation30",
+  "synthetic": true,
+  "authorship": "assistant_authored_before_model_runs",
+  "human_reviewed": false,
+  "annotation_status": "draft_for_human_review",
+  "case_count": 30,
+  "groups": {
+    "ordinary": 15,
+    "tricky": 15
+  },
+  "split": "test",
+  "input_sha256": "983f71d8039f49d73a75c8a1e8d1b95e242b1c2bf61f634f4367f9dd47edf3e5",
+  "labels_sha256": "a149992c4f7140394f237c5b66f0548fedd7a193299707c67424b33490c7df98",
+  "cases": [
+    {
+      "case_id": "E001",
+      "group": "ordinary",
+      "document_type": "invoice_draft",
+      "tags": [
+        "single_service",
+        "arithmetic",
+        "complete_details"
+      ],
+      "rationale": "Одна услуга: 3 × 1250 = 3750; ч. сохраняется с точкой."
+    },
+    {
+      "case_id": "E002",
+      "group": "tricky",
+      "document_type": "invoice_draft",
+      "tags": [
+        "ownership",
+        "email_selection",
+        "latest_correction"
+      ],
+      "rationale": "Реквизиты продавца и логиста не заменяют покупателя; адрес бухгалтерии уточнён последним."
+    },
+    {
+      "case_id": "E003",
+      "group": "ordinary",
+      "document_type": "transfer_draft",
+      "tags": [
+        "self_transfer",
+        "complete_details"
+      ],
+      "rationale": "Полные данные собственного перевода; маска копируется целиком."
+    },
+    {
+      "case_id": "E004",
+      "group": "tricky",
+      "document_type": "transfer_draft",
+      "tags": [
+        "paired_details",
+        "resolved_alternatives",
+        "assistant_not_evidence"
+      ],
+      "rationale": "Выбор по окончанию разрешает связанную пару ВТБ–****9048; предложение ассистента не выбор пользователя."
+    },
+    {
+      "case_id": "E005",
+      "group": "ordinary",
+      "document_type": "invoice_draft",
+      "tags": [
+        "whole_service_fee",
+        "basis",
+        "follow_up"
+      ],
+      "rationale": "Прямая общая стоимость не задаёт количество; номер и дата основания известны."
+    },
+    {
+      "case_id": "E006",
+      "group": "tricky",
+      "document_type": "invoice_draft",
+      "tags": [
+        "independent_attribute_corrections",
+        "arithmetic",
+        "quoted_names"
+      ],
+      "rationale": "Количество проектора и цена экрана исправляются независимо; 2 × 1700 + 3 × 450 = 4750."
+    },
+    {
+      "case_id": "E007",
+      "group": "ordinary",
+      "document_type": "invoice_draft",
+      "tags": [
+        "multiple_items",
+        "explicit_subject",
+        "arithmetic"
+      ],
+      "rationale": "Две выбранные позиции и явное общее назначение; 7 × 180 + 2 × 310 = 1880."
+    },
+    {
+      "case_id": "E008",
+      "group": "tricky",
+      "document_type": "invoice_draft",
+      "tags": [
+        "unresolved_alternatives",
+        "paired_details",
+        "assistant_not_evidence"
+      ],
+      "rationale": "Покупатель ещё не выбран: имя, ИНН и email ambiguous; нельзя скрестить карточки или принять догадку ассистента."
+    },
+    {
+      "case_id": "E009",
+      "group": "ordinary",
+      "document_type": "transfer_draft",
+      "tags": [
+        "self_transfer",
+        "missing_details"
+      ],
+      "rationale": "Запрос себе поддерживается без банковских реквизитов; их нельзя выдумывать."
+    },
+    {
+      "case_id": "E010",
+      "group": "tricky",
+      "document_type": "transfer_draft",
+      "tags": [
+        "withdrawal",
+        "latest_correction",
+        "fee_scope"
+      ],
+      "rationale": "Закрытая карта отозвана, банк сохраняется; 100 на комиссию не вычитается из 9400 получателю."
+    },
+    {
+      "case_id": "E011",
+      "group": "ordinary",
+      "document_type": "invoice_draft",
+      "tags": [
+        "explicit_zero_vat",
+        "whole_service_fee"
+      ],
+      "rationale": "НДС 0% — rate, а не no_vat; общая сумма не задаёт цену единицы."
+    },
+    {
+      "case_id": "E012",
+      "group": "tricky",
+      "document_type": "invoice_draft",
+      "tags": [
+        "discount_scope",
+        "whole_line_fee",
+        "historical_decoy",
+        "arithmetic"
+      ],
+      "rationale": "Скидка только на товары; фиксированная плата за настройку без количества и цены единицы. Итог 3250."
+    },
+    {
+      "case_id": "E013",
+      "group": "ordinary",
+      "document_type": "none",
+      "tags": [
+        "information_only"
+      ],
+      "rationale": "Поиск существующего документа не является запросом нового черновика."
+    },
+    {
+      "case_id": "E014",
+      "group": "tricky",
+      "document_type": "none",
+      "tags": [
+        "recipient_correction",
+        "unsupported_transfer"
+      ],
+      "rationale": "Себе исправлено на другого человека: актуальная операция больше не поддерживается."
+    },
+    {
+      "case_id": "E015",
+      "group": "ordinary",
+      "document_type": "invoice_draft",
+      "tags": [
+        "single_service",
+        "missing_details"
+      ],
+      "rationale": "Отсутствие реквизитов не мешает подготовке счёта с известной услугой и суммой."
+    },
+    {
+      "case_id": "E016",
+      "group": "tricky",
+      "document_type": "invoice_draft",
+      "tags": [
+        "invalid_vs_missing",
+        "superseded_valid_details",
+        "calendar_date"
+      ],
+      "rationale": "Последние ИНН/БИК/дата явно некорректны: invalid, не missing и не прежние значения. Email исправлен отдельно."
+    },
+    {
+      "case_id": "E017",
+      "group": "ordinary",
+      "document_type": "transfer_draft",
+      "tags": [
+        "explicit_kopecks",
+        "whole_mask"
+      ],
+      "rationale": "Сумма с копейками дана прямо, маска сохраняется со всеми группами."
+    },
+    {
+      "case_id": "E018",
+      "group": "tricky",
+      "document_type": "transfer_draft",
+      "tags": [
+        "calculation_operands",
+        "latest_correction",
+        "fee_scope"
+      ],
+      "rationale": "Исправлен только остаток; резерв прежний, комиссия отдельно: 28120.50 − 8350.50 = 19770."
+    },
+    {
+      "case_id": "E019",
+      "group": "ordinary",
+      "document_type": "invoice_draft",
+      "tags": [
+        "quoted_name",
+        "included_vat",
+        "explicit_total"
+      ],
+      "rationale": "Итог и ставка явно даны; НДС включён в цену, повторно не начисляется."
+    },
+    {
+      "case_id": "E020",
+      "group": "tricky",
+      "document_type": "invoice_draft",
+      "tags": [
+        "unselected_items",
+        "partial_selection",
+        "assistant_not_evidence"
+      ],
+      "rationale": "В счёте только выбранный экран; невыбранные проекторы не позиции и не добавка к итогу."
+    },
+    {
+      "case_id": "E021",
+      "group": "ordinary",
+      "document_type": "transfer_draft",
+      "tags": [
+        "self_transfer",
+        "leading_zero"
+      ],
+      "rationale": "Прямой перевод себе; ведущий ноль окончания карты сохраняется."
+    },
+    {
+      "case_id": "E022",
+      "group": "tricky",
+      "document_type": "transfer_draft",
+      "tags": [
+        "recipient_correction",
+        "ownership",
+        "missing_details"
+      ],
+      "rationale": "Получатель исправлен с брата на себя: перевод поддерживается, но банк и карту брата наследовать нельзя."
+    },
+    {
+      "case_id": "E023",
+      "group": "ordinary",
+      "document_type": "invoice_draft",
+      "tags": [
+        "explicit_subject",
+        "unit_spelling",
+        "arithmetic"
+      ],
+      "rationale": "Назначение задано отдельно; 2 × 2450 = 4900, единица экз. сохраняется."
+    },
+    {
+      "case_id": "E024",
+      "group": "tricky",
+      "document_type": "invoice_draft",
+      "tags": [
+        "quoted_instructions",
+        "ownership",
+        "latest_correction"
+      ],
+      "rationale": "Команда в цитате из чужого письма не меняет покупателя; количество обновлено до 3, итог 5550."
+    },
+    {
+      "case_id": "E025",
+      "group": "ordinary",
+      "document_type": "none",
+      "tags": [
+        "unsupported_document"
+      ],
+      "rationale": "Акт приёмки не является счётом на оплату."
+    },
+    {
+      "case_id": "E026",
+      "group": "tricky",
+      "document_type": "none",
+      "tags": [
+        "cancellation",
+        "historical_follow_up"
+      ],
+      "rationale": "Счёт отменён; подтверждение архивной суммы не возобновляет поручение."
+    },
+    {
+      "case_id": "E027",
+      "group": "ordinary",
+      "document_type": "transfer_draft",
+      "tags": [
+        "self_transfer",
+        "missing_amount"
+      ],
+      "rationale": "Отсутствие суммы не отменяет активный перевод на собственную карту."
+    },
+    {
+      "case_id": "E028",
+      "group": "tricky",
+      "document_type": "transfer_draft",
+      "tags": [
+        "ownership",
+        "paired_details",
+        "whole_mask",
+        "assistant_not_evidence"
+      ],
+      "rationale": "Не скрестить собственный банк с картой кассира; исходная маска с 0073 сохраняется целиком."
+    },
+    {
+      "case_id": "E029",
+      "group": "ordinary",
+      "document_type": "invoice_draft",
+      "tags": [
+        "fractional_quantity",
+        "quoted_name",
+        "arithmetic"
+      ],
+      "rationale": "Дробная длина: 1.25 × 1600 = 2000; модель товара сохраняется."
+    },
+    {
+      "case_id": "E030",
+      "group": "tricky",
+      "document_type": "invoice_draft",
+      "tags": [
+        "shared_total",
+        "superseded_fees",
+        "included_vat",
+        "date_coreference"
+      ],
+      "rationale": "Общая цена пакета заменяет старые платы; НДС включён; год 2025 взят из уточнения, а не из номера 004/27."
+    }
+  ]
+}
