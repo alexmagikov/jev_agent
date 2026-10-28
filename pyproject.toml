@@ -1,7 +1,7 @@
 [project]
 name = "jev-agent"
 version = "0.1.0"
-description = "Add your description here"
+description = "jev-agent"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
@@ -14,3 +14,8 @@ dependencies = [
 dev = [
     "pytest>=9.1.1",
 ]
+
+[tool.pytest.ini_options]
+# Тесты импортируют src и scripts как пакеты от корня проекта.
+pythonpath = ["."]
+testpaths = ["tests"]

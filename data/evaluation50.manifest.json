@@ -1,18 +1,19 @@
 {
-  "dataset_version": 1,
-  "name": "evaluation30",
+  "dataset_version": 2,
+  "name": "evaluation50",
   "synthetic": true,
   "authorship": "assistant_authored_before_model_runs",
   "human_reviewed": false,
   "annotation_status": "draft_for_human_review",
-  "case_count": 30,
+  "case_count": 50,
   "groups": {
-    "ordinary": 15,
-    "tricky": 15
+    "ordinary": 25,
+    "tricky": 25
   },
   "split": "test",
-  "input_sha256": "983f71d8039f49d73a75c8a1e8d1b95e242b1c2bf61f634f4367f9dd47edf3e5",
-  "labels_sha256": "a149992c4f7140394f237c5b66f0548fedd7a193299707c67424b33490c7df98",
+  "evidence_rule": "all user messages that state or select the current value",
+  "input_sha256": "5959c02345503ecee8de07a9f522b57374d839c3f930f7319640db44724328c9",
+  "labels_sha256": "f05a4f7974d1ba4d53413664d12677f61ccf2bfb3f564e5fcf5659e2257f9457",
   "cases": [
     {
       "case_id": "E001",
@@ -333,6 +334,214 @@
         "date_coreference"
       ],
       "rationale": "Общая цена пакета заменяет старые платы; НДС включён; год 2025 взят из уточнения, а не из номера 004/27."
+    },
+    {
+      "case_id": "E031",
+      "group": "ordinary",
+      "document_type": "invoice_draft",
+      "tags": [
+        "hourly_service",
+        "arithmetic",
+        "quantity_unit"
+      ],
+      "rationale": "Почасовая услуга: 4 × 2400 = 9600; единица берётся у количества («часа»)."
+    },
+    {
+      "case_id": "E032",
+      "group": "tricky",
+      "document_type": "invoice_draft",
+      "tags": [
+        "ownership",
+        "seller_details",
+        "assistant_not_evidence"
+      ],
+      "rationale": "Счёт и БИК продавца не заполняют карточку покупателя; у покупателя известен только ИНН."
+    },
+    {
+      "case_id": "E033",
+      "group": "ordinary",
+      "document_type": "transfer_draft",
+      "tags": [
+        "self_transfer",
+        "complete_details",
+        "short_mask"
+      ],
+      "rationale": "Полный перевод себе; маска с одной звёздочкой копируется как есть."
+    },
+    {
+      "case_id": "E034",
+      "group": "tricky",
+      "document_type": "transfer_draft",
+      "tags": [
+        "paired_details",
+        "resolved_alternatives",
+        "assistant_not_evidence"
+      ],
+      "rationale": "Две свои карты; выбор по банку в m5 отменяет предложение ассистента."
+    },
+    {
+      "case_id": "E035",
+      "group": "ordinary",
+      "document_type": "none",
+      "tags": [
+        "information_only",
+        "declined_offer"
+      ],
+      "rationale": "Вопрос, где кнопка, и отказ от черновика — не запрос на подготовку."
+    },
+    {
+      "case_id": "E036",
+      "group": "tricky",
+      "document_type": "invoice_draft",
+      "tags": [
+        "withdrawn_item",
+        "arithmetic",
+        "latest_correction"
+      ],
+      "rationale": "Тумбы убраны из заказа; в счёте только столы: 2 × 5000 = 10000."
+    },
+    {
+      "case_id": "E037",
+      "group": "ordinary",
+      "document_type": "invoice_draft",
+      "tags": [
+        "unit_price_only",
+        "missing_total"
+      ],
+      "rationale": "Цена «по … каждый» без количества: цена единицы известна, итог missing."
+    },
+    {
+      "case_id": "E038",
+      "group": "tricky",
+      "document_type": "none",
+      "tags": [
+        "postponement",
+        "historical_decoy"
+      ],
+      "rationale": "Подготовка явно отложена; просьба запомнить сумму не возобновляет черновик."
+    },
+    {
+      "case_id": "E039",
+      "group": "ordinary",
+      "document_type": "transfer_draft",
+      "tags": [
+        "self_transfer",
+        "thousands_separator",
+        "whole_mask"
+      ],
+      "rationale": "Сумма с пробелом тысяч; маска с символами • копируется целиком; источник не назван."
+    },
+    {
+      "case_id": "E040",
+      "group": "tricky",
+      "document_type": "transfer_draft",
+      "tags": [
+        "percentage",
+        "calculation_operands",
+        "decoy_number"
+      ],
+      "rationale": "Процент от остатка: 18 400 × 25 / 100 = 4600; кредитный лимит не операнд."
+    },
+    {
+      "case_id": "E041",
+      "group": "ordinary",
+      "document_type": "none",
+      "tags": [
+        "unsupported_document"
+      ],
+      "rationale": "Счёт-фактура — другой документ, не счёт на оплату."
+    },
+    {
+      "case_id": "E042",
+      "group": "tricky",
+      "document_type": "invoice_draft",
+      "tags": [
+        "incomplete_date",
+        "basis"
+      ],
+      "rationale": "Дата договора без года и без уточнения: basis_date invalid, номер известен."
+    },
+    {
+      "case_id": "E043",
+      "group": "ordinary",
+      "document_type": "invoice_draft",
+      "tags": [
+        "individual_entrepreneur",
+        "basis",
+        "complete_details"
+      ],
+      "rationale": "ИП с 12-значным ИНН; полная дата основания переводится в ISO."
+    },
+    {
+      "case_id": "E044",
+      "group": "tricky",
+      "document_type": "none",
+      "tags": [
+        "past_operation",
+        "declined_offer"
+      ],
+      "rationale": "Сообщение о прошлом переводе и отказ от нового — не запрос черновика."
+    },
+    {
+      "case_id": "E045",
+      "group": "ordinary",
+      "document_type": "transfer_draft",
+      "tags": [
+        "self_transfer",
+        "whole_mask",
+        "missing_details"
+      ],
+      "rationale": "Маска с открытыми цифрами в середине; банк и источник не названы."
+    },
+    {
+      "case_id": "E046",
+      "group": "tricky",
+      "document_type": "transfer_draft",
+      "tags": [
+        "decoy_number",
+        "fee_scope"
+      ],
+      "rationale": "Остаток и лимит — не сумма перевода; комиссия не вычитается: 12 000."
+    },
+    {
+      "case_id": "E047",
+      "group": "ordinary",
+      "document_type": "none",
+      "tags": [
+        "unsupported_transfer"
+      ],
+      "rationale": "Перевод на карту другого человека не поддерживается."
+    },
+    {
+      "case_id": "E048",
+      "group": "tricky",
+      "document_type": "invoice_draft",
+      "tags": [
+        "unit_vs_total",
+        "unresolved_alternatives"
+      ],
+      "rationale": "Не решено, 4500 — цена лампы или всей партии: итог ambiguous, цена единицы null."
+    },
+    {
+      "case_id": "E049",
+      "group": "ordinary",
+      "document_type": "invoice_draft",
+      "tags": [
+        "decimal_price",
+        "arithmetic",
+        "quoted_names"
+      ],
+      "rationale": "Дробная цена за кг: 25 × 48,5 = 1212,5; название товара в кавычках сохраняется."
+    },
+    {
+      "case_id": "E050",
+      "group": "tricky",
+      "document_type": "none",
+      "tags": [
+        "unsupported_document",
+        "invoice_word_decoy"
+      ],
+      "rationale": "Нужен только УПД; счёт на оплату уже отправлен ранее."
     }
   ]
 }

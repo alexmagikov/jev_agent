@@ -20,7 +20,7 @@ from typesafe_sdk.constants import DEFAULT_BASE_URL, DEFAULT_MODEL, DEFAULT_TIME
 
 from src.cases.document_type import DocumentMessage, DocumentTypeCase, DocumentTypeState
 from src.extraction import ExtractionProposal, get_proposal_model, get_template, prepare_fields
-from src.llm import AsyncLLMExtractor, EXTRACTION_PROMPT
+from src.llm import AsyncLLMExtractor, build_extraction_prompt
 from src.settings import LLMSettings
 from src.verification import (
     VerificationResponse, VerificationState, _ITEMS_RULES, _RULES,
@@ -84,7 +84,7 @@ async def main(export_dir=None):
     messages = [DocumentMessage.model_validate(message) for message in c001["messages"]]
     proposal = c001_proposal()
     checked = prepare_fields(proposal, messages, "invoice_draft")
-    questions = build_verification_questions(checked, proposal=proposal, document_type="invoice_draft")
+    questions = build_verification_questions(checked, proposal=proposal, document_type="invoice_draft", messages=messages)
     state = VerificationState(
         messages=messages, document_type="invoice_draft", rules=_RULES,
     )
@@ -130,7 +130,10 @@ async def main(export_dir=None):
                 ("06-llm-retry-python.request.json", python_feedback),
                 ("07-llm-retry-jev.request.json", jev_feedback),
             ):
-                repair = {"previous_proposal": proposal, "repair_fields": ["items"]} if name == "07-llm-retry-jev.request.json" else {}
+                repair = {
+                    "previous_proposal": proposal, "previous_checked_fields": checked,
+                    "repair_fields": ["items"], "repair_paths": ["items"],
+                } if name == "07-llm-retry-jev.request.json" else {}
                 await extractor.extract(messages, "invoice_draft", feedback=feedback, **repair)
                 examples[name] = captured[-1]
             for case in cases:
@@ -155,7 +158,10 @@ async def main(export_dir=None):
         assert retry_user.pop("feedback")
         if filename == "07-llm-retry-jev.request.json":
             assert retry_user.pop("previous_proposal") == proposal.model_dump(mode="json")
+            assert retry_user.pop("previous_checked_fields") == checked.model_dump(mode="json")
+            assert retry_user.pop("python_changes") == {}
             assert retry_user.pop("repair_fields") == ["items"]
+            assert retry_user.pop("repair_paths") == ["items"]
             assert retry_user["template"]["fields"] == {"items": user["template"]["fields"]["items"]}
             repair_schema = retry_user["output_schema"]
             repair_fields_schema = repair_schema["$defs"][repair_schema["properties"]["fields"]["$ref"].split("/")[-1]]
@@ -173,7 +179,9 @@ async def main(export_dir=None):
         "tokens": None,
         "dataset": [{"split": split, "document_type": kind, "cases": count}
                     for (split, kind), count in sorted(counts.items())],
-        "system_prompt": size(EXTRACTION_PROMPT),
+        "system_prompt": size(build_extraction_prompt("invoice_draft")),
+        "system_prompts": {kind: size(build_extraction_prompt(kind))
+                           for kind in ("invoice_draft", "transfer_draft")},
         "c001": {
             "repair_output_fields": ["items"],
             "user_content": size(llm["messages"][1]["content"]),
