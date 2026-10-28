@@ -9,15 +9,18 @@ from decimal import Decimal, DecimalException, localcontext
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from src.cases.document_type import DocumentMessage
 from src.schemas.document_schemas import (
+    DocumentValidation,
+    ValidationIssue,
     InvoiceFields,
     TransferFields,
 )
 from src.schemas.extraction_schemas import (
     Calculation,
+    ProposedField,
     ExtractionProposal,
     PreparedFields,
     SourceQuote,
@@ -370,19 +373,8 @@ def requisite_source_candidates(name: str, messages: list[DocumentMessage]) -> l
     return candidates
 
 
-def prepare_fields(
-    proposal: ExtractionProposal,
-    messages: list[DocumentMessage],
-    document_type: SupportedDocumentType,
-) -> PreparedFields:
-    """Проверяет источники, вычисляет значения и отличает invalid от ошибок модели."""
-
-    indexed = message_index(messages)
-    model = InvoiceFields if document_type == "invoice_draft" else TransferFields
-    if set(proposal.fields) != set(model.model_fields):
-        raise ExtractionError("Предложение должно содержать ровно все поля выбранного шаблона")
-
-    # Проверяем все источники до расчётов, чтобы один ремонт получил все повреждённые пути.
+def _proposal_sources(proposal: ExtractionProposal) -> list[tuple[SourceQuote, str]]:
+    """Собирает цитаты поля и операндов вместе с точными путями ошибок."""
     sources = []
     for name, field in proposal.fields.items():
         sources.extend((source, f"{name}.evidence[{index}]") for index, source in enumerate(field.evidence))
@@ -395,25 +387,30 @@ def prepare_fields(
             if plan is not None:
                 sources.extend((operand.source, f"{path}.operands[{index}].source")
                                for index, operand in enumerate(plan.operands))
-    
-    source_errors = []
-    for source, path in sources:
-        try:
-            _check_source(source, indexed, path=path)
-        except ExtractionError as error:
-            source_errors.append(error)
-    if source_errors:
-        raise ExtractionError(
-            "\n".join(str(error) for error in source_errors), code="invalid_source",
-            repair_paths=tuple(path for error in source_errors for path in error.repair_paths),
-        )
-    
-    fields: dict[str, dict] = {}
-    calculated: set[str] = set()
+    return sources
+
+
+def _raw_field(field: ProposedField) -> dict:
+    """Переносит исходные значения в черновик до проверки и выполнения формул."""
+    return {
+        "status": field.status,
+        "value": [
+            item.model_dump(exclude={"quantity_calculation", "unit_price_calculation"})
+            for item in field.value
+        ] if isinstance(field.value, list) else field.value,
+        "evidence": list(dict.fromkeys(source.message_id for source in field.evidence)),
+        "derivation": None,
+    }
+
+
+def _prepare_field(
+    name: str, field: ProposedField, indexed: dict[str, DocumentMessage], calculated: set[str],
+) -> dict:
+    """Проверяет одно поле; общие ограничения проверяются вызывающим методом."""
 
     def apply_calculation(plan: Calculation, target: str, checked_field: dict, *, source_path: str) -> float:
         if len(calculated) >= 32:
-            raise ExtractionError("Допустимо не больше 32 вычислений на предложение")
+            raise ExtractionError("Допустимо не больше 32 вычислений на предложение", repair_paths=(target,))
         
         try:
             value, formula = _calculate(plan, indexed, target, source_path=source_path)
@@ -428,124 +425,146 @@ def prepare_fields(
         calculated.add(target)
         return value
 
-    for name, field in proposal.fields.items():
-        if field.status != "fillable" and field.value is not None:
-            raise ExtractionError(f"{name}: незаполняемое поле должно иметь value=null", repair_paths=(name,))
-        if field.status in ("fillable", "invalid", "ambiguous") and not field.evidence:
-            raise ExtractionError(f"{name}: для значения или проблемы нужны источники", code="missing_evidence",
-                                  repair_paths=(f"{name}.evidence",))
-        
-        checked_field = {
-            "status": field.status,
-            "value": [
-                item.model_dump(exclude={"quantity_calculation", "unit_price_calculation"})
-                for item in field.value
-            ] if isinstance(field.value, list) else field.value,
-            "evidence": list(dict.fromkeys(source.message_id for source in field.evidence)),
-            "derivation": None,
-        }
-        if field.calculation is not None:
-            if name != "amount_rub":
-                raise ExtractionError(f"{name}: недопустимое поле для вычисления", repair_paths=(name,))
-            if field.status != "fillable":
-                raise ExtractionError("Нельзя вычислять незаполняемое поле", repair_paths=(name,))
-            if field.value is not None:
-                raise ExtractionError(f"{name}: при calculation значение должно быть null", code="conflicting_calculation_value", repair_paths=(name,))
-            
-            checked_field["value"] = apply_calculation(
-                field.calculation, name, checked_field, source_path=f"{name}.calculation",
-            )
+    if field.status != "fillable" and field.value is not None:
+        raise ExtractionError(f"{name}: незаполняемое поле должно иметь value=null", repair_paths=(name,))
+    if field.status in ("fillable", "invalid", "ambiguous") and not field.evidence:
+        raise ExtractionError(f"{name}: для значения или проблемы нужны источники", code="missing_evidence",
+                              repair_paths=(f"{name}.evidence",))
 
-        if name == "items" and isinstance(field.value, list):
-            for index, item in enumerate(field.value):
-                for key, plan_name, plan in (
-                    ("quantity", "quantity_calculation", item.quantity_calculation),
-                    ("unit_price_rub", "unit_price_calculation", item.unit_price_calculation),
-                ):
-                    if plan is None:
-                        continue
-                    target = f"items[{index}].{key}"
-                    if getattr(item, key) is not None:
-                        raise ExtractionError(f"{target}: при расчёте значение должно быть null", code="conflicting_calculation_value", repair_paths=(target,))
-                    checked_field["value"][index][key] = apply_calculation(
-                        plan, target, checked_field, source_path=f"items[{index}].{plan_name}",
-                    )
-        fields[name] = checked_field
+    checked_field = _raw_field(field)
+    if field.calculation is not None:
+        if name != "amount_rub":
+            raise ExtractionError(f"{name}: недопустимое поле для вычисления", repair_paths=(name,))
+        if field.status != "fillable":
+            raise ExtractionError("Нельзя вычислять незаполняемое поле", repair_paths=(name,))
+        if field.value is not None:
+            raise ExtractionError(f"{name}: при calculation значение должно быть null", code="conflicting_calculation_value", repair_paths=(name,))
+
+        checked_field["value"] = apply_calculation(
+            field.calculation, name, checked_field, source_path=f"{name}.calculation",
+        )
+
+    if name == "items" and isinstance(field.value, list):
+        for index, item in enumerate(field.value):
+            for key, plan_name, plan in (
+                ("quantity", "quantity_calculation", item.quantity_calculation),
+                ("unit_price_rub", "unit_price_calculation", item.unit_price_calculation),
+            ):
+                if plan is None:
+                    continue
+                target = f"items[{index}].{key}"
+                if getattr(item, key) is not None:
+                    raise ExtractionError(f"{target}: при расчёте значение должно быть null", code="conflicting_calculation_value", repair_paths=(target,))
+                checked_field["value"][index][key] = apply_calculation(
+                    plan, target, checked_field, source_path=f"items[{index}].{plan_name}",
+                )
 
     exact_fields = {
         "recipient_inn", "recipient_email", "recipient_account", "recipient_bik",
         "destination_card_masked", "basis_number",
     }
 
-    for name, field in fields.items():
-        if field["status"] != "fillable":
-            continue
-        value = field["value"]
-        quotes = [source.quote for source in proposal.fields[name].evidence]
+    if checked_field["status"] != "fillable":
+        return checked_field
+    value = checked_field["value"]
+    quotes = [source.quote for source in field.evidence]
 
-        if value is None:
-            raise ExtractionError(f"{name}: у заполняемого поля нет значения или расчёта", code="missing_value", repair_paths=(name,))
-        if isinstance(value, str) and not value.strip():
-            raise ExtractionError(f"{name}: заполняемая строка не может быть пустой или состоять из пробелов",
-                                  code="missing_value", repair_paths=(name,))
-        if name in exact_fields and (not isinstance(value, str) or not any(value in q for q in quotes)):
-            raise ExtractionError(f"{name}: реквизит должен дословно присутствовать в источнике", repair_paths=(name,))
-        if name in {"recipient_email", "destination_card_masked"} and not _has_whole_contact_source(
-            name, value, proposal.fields[name].evidence, indexed,
-        ):
-            raise ExtractionError(
-                f"{name}: скопируй реквизит целиком из исходного сообщения; "
-                "нельзя обрезать адрес или маску в значении либо цитате. "
-                "Если исходный email неверного формата, используй invalid, value=null "
-                "и дословную цитату проблемного реквизита.",
-                code="invalid_source", repair_paths=(name,),
-            )
-        if name in {"recipient_inn", "recipient_account", "recipient_bik"} and not _has_whole_numeric_source(
-            value, proposal.fields[name].evidence, indexed,
-        ):
-            raise ExtractionError(
-                f"{name}: скопируй цифровой реквизит целиком из исходного сообщения; "
-                "нельзя обрезать цифры в значении или цитате ради нужной длины. "
-                "Если исходный реквизит неверного формата, используй invalid, value=null "
-                "и дословную цитату проблемного реквизита.",
-                code="invalid_source", repair_paths=(name,),
-            )
-        
-        numbers: set[Decimal] = set()
-        for source in proposal.fields[name].evidence:
-            numbers.update(
-                _numbers_in([source.quote]) & _numbers_in([indexed[source.message_id].text])
-            )
+    if value is None:
+        raise ExtractionError(f"{name}: у заполняемого поля нет значения или расчёта", code="missing_value", repair_paths=(name,))
+    if isinstance(value, str) and not value.strip():
+        raise ExtractionError(f"{name}: заполняемая строка не может быть пустой или состоять из пробелов",
+                              code="missing_value", repair_paths=(name,))
+    if name in exact_fields and (not isinstance(value, str) or not any(value in q for q in quotes)):
+        raise ExtractionError(f"{name}: реквизит должен дословно присутствовать в источнике", repair_paths=(name,))
+    if name in {"recipient_email", "destination_card_masked"} and not _has_whole_contact_source(
+        name, value, field.evidence, indexed,
+    ):
+        raise ExtractionError(
+            f"{name}: скопируй реквизит целиком из исходного сообщения; "
+            "нельзя обрезать адрес или маску в значении либо цитате. "
+            "Если исходный email неверного формата, используй invalid, value=null "
+            "и дословную цитату проблемного реквизита.",
+            code="invalid_source", repair_paths=(name,),
+        )
+    if name in {"recipient_inn", "recipient_account", "recipient_bik"} and not _has_whole_numeric_source(
+        value, field.evidence, indexed,
+    ):
+        raise ExtractionError(
+            f"{name}: скопируй цифровой реквизит целиком из исходного сообщения; "
+            "нельзя обрезать цифры в значении или цитате ради нужной длины. "
+            "Если исходный реквизит неверного формата, используй invalid, value=null "
+            "и дословную цитату проблемного реквизита.",
+            code="invalid_source", repair_paths=(name,),
+        )
 
-        if name in ("amount_rub", "vat_rate_percent") and name not in calculated:
-            if not isinstance(value, (int, float)) or Decimal(str(value)) not in numbers:
-                raise ExtractionError(f"{name}: число не подтверждено источником или формулой", code="unsupported_numeric_value", repair_paths=(name,))
-            
-        if name == "items":
-            if not isinstance(value, list) or not value:
-                raise ExtractionError("items: ожидается непустой список позиций", repair_paths=("items",))
-            
-            for index, item in enumerate(value):
-                if item["unit"] is not None and not _has_whole_unit_source(
-                    item["unit"], proposal.fields[name].evidence, indexed,
-                ):
-                    raise ExtractionError(
-                        f"items[{index}].unit: единица измерения не найдена целиком в указанных репликах user. "
-                        "Скопируй исходную форму без изменения окончания или обозначения; "
-                        "если единица не указана, верни unit=null.",
-                        code="invalid_source", repair_paths=(f"items[{index}].unit",),
-                    )
-                for key in ("quantity", "unit_price_rub"):
-                    number = item[key]
-                    if number is not None and f"items[{index}].{key}" not in calculated:
-                        if Decimal(str(number)) not in numbers:
-                            raise ExtractionError(f"items[{index}].{key}: неподтверждённое число",
-                                                  repair_paths=(f"items[{index}].{key}",))
-                    if number is not None and number < 0:
-                        raise ExtractionError("Отрицательное количество или цена позиции", repair_paths=(f"items[{index}].{key}",))
+    numbers: set[Decimal] = set()
+    for source in field.evidence:
+        numbers.update(
+            _numbers_in([source.quote]) & _numbers_in([indexed[source.message_id].text])
+        )
 
-        if _invalid_format(name, value):
-            field.update(status="invalid", value=None, derivation=None)
+    if name in ("amount_rub", "vat_rate_percent") and name not in calculated:
+        if not isinstance(value, (int, float)) or Decimal(str(value)) not in numbers:
+            raise ExtractionError(f"{name}: число не подтверждено источником или формулой", code="unsupported_numeric_value", repair_paths=(name,))
+
+    if name == "items":
+        if not isinstance(value, list) or not value:
+            raise ExtractionError("items: ожидается непустой список позиций", repair_paths=("items",))
+
+        for index, item in enumerate(value):
+            if item["unit"] is not None and not _has_whole_unit_source(
+                item["unit"], field.evidence, indexed,
+            ):
+                raise ExtractionError(
+                    f"items[{index}].unit: единица измерения не найдена целиком в указанных репликах user. "
+                    "Скопируй исходную форму без изменения окончания или обозначения; "
+                    "если единица не указана, верни unit=null.",
+                    code="invalid_source", repair_paths=(f"items[{index}].unit",),
+                )
+            for key in ("quantity", "unit_price_rub"):
+                number = item[key]
+                if number is not None and f"items[{index}].{key}" not in calculated:
+                    if Decimal(str(number)) not in numbers:
+                        raise ExtractionError(f"items[{index}].{key}: неподтверждённое число",
+                                              repair_paths=(f"items[{index}].{key}",))
+                if number is not None and number < 0:
+                    raise ExtractionError("Отрицательное количество или цена позиции", repair_paths=(f"items[{index}].{key}",))
+
+    if _invalid_format(name, value):
+        checked_field.update(status="invalid", value=None, derivation=None)
+
+    return checked_field
+
+
+def prepare_fields(
+    proposal: ExtractionProposal,
+    messages: list[DocumentMessage],
+    document_type: SupportedDocumentType,
+) -> PreparedFields:
+    """Проверяет источники, вычисляет значения и отличает invalid от ошибок модели."""
+
+    indexed = message_index(messages)
+    model = InvoiceFields if document_type == "invoice_draft" else TransferFields
+    if set(proposal.fields) != set(model.model_fields):
+        raise ExtractionError("Предложение должно содержать ровно все поля выбранного шаблона")
+
+    sources = _proposal_sources(proposal)
+
+    source_errors = []
+    for source, path in sources:
+        try:
+            _check_source(source, indexed, path=path)
+        except ExtractionError as error:
+            source_errors.append(error)
+    if source_errors:
+        raise ExtractionError(
+            "\n".join(str(error) for error in source_errors), code="invalid_source",
+            repair_paths=tuple(path for error in source_errors for path in error.repair_paths),
+        )
+
+    calculated: set[str] = set()
+    fields = {name: _prepare_field(name, field, indexed, calculated)
+              for name, field in proposal.fields.items()}
 
     if "vat_mode" in fields:
         if fields["vat_mode"]["value"] == "no_vat" and fields["vat_rate_percent"]["status"] == "fillable":
@@ -559,3 +578,84 @@ def prepare_fields(
             repair_paths=tuple(sorted({item["loc"][0] for item in error.errors()
                                        if item["loc"] and item["loc"][0] in proposal.fields})),
         ) from error
+
+
+def prepare_partial_fields(
+    proposal: ExtractionProposal,
+    messages: list[DocumentMessage],
+    document_type: SupportedDocumentType,
+) -> tuple[PreparedFields, DocumentValidation]:
+    """Сохраняет кандидат и проверяет независимые поля после исчерпания ремонта.
+
+    Строгий prepare_fields по-прежнему отклоняет ошибки. Здесь плохой источник
+    блокирует проверку своего поля, остальные поля проверяются обычным кодом.
+    Для проблемных полей сохраняются исходные значения, цитаты и планы расчётов.
+    """
+    indexed = message_index(messages)
+    model = InvoiceFields if document_type == "invoice_draft" else TransferFields
+    if set(proposal.fields) != set(model.model_fields):
+        raise ExtractionError("Предложение должно содержать ровно все поля выбранного шаблона")
+
+    report = DocumentValidation()
+    fields = {}
+    calculated = set()
+    bad_sources = set()
+
+    def record(error: ExtractionError) -> None:
+        for path in error.repair_paths:
+            report.issues.append(ValidationIssue(
+                path=path, stage="python", code=error.code, message=str(error),
+            ))
+
+    for source, path in _proposal_sources(proposal):
+        try:
+            _check_source(source, indexed, path=path)
+        except ExtractionError as error:
+            record(error)
+            bad_sources.add(path.split(".", 1)[0].split("[", 1)[0])
+
+    for name, field in proposal.fields.items():
+        checked = _raw_field(field)
+        before = calculated.copy()
+        if name not in bad_sources:
+            try:
+                checked = _prepare_field(name, field, indexed, calculated)
+                TypeAdapter(model.model_fields[name].annotation).validate_python(checked)
+            except ExtractionError as error:
+                if not error.repair_paths:
+                    error.repair_paths = (name,)
+                record(error)
+                calculated = before
+            except ValidationError:
+                record(ExtractionError("Значение не соответствует типу поля", repair_paths=(name,)))
+                calculated = before
+        fields[name] = checked
+
+    if "vat_mode" in fields and fields["vat_mode"]["value"] == "no_vat" and fields["vat_rate_percent"]["status"] == "fillable":
+        record(ExtractionError("Без НДС не должно одновременно иметь заполненную ставку НДС",
+                               repair_paths=("vat_mode", "vat_rate_percent")))
+
+    bad_roots = {issue.path.split(".", 1)[0].split("[", 1)[0] for issue in report.issues}
+    # Формулы с цитатами не содержат явного графа зависимостей. Консервативно
+    # отмечаем вычисляемый итог, когда позиции не удалось подтвердить.
+    amount = proposal.fields.get("amount_rub")
+    if "items" in bad_roots and "amount_rub" not in bad_roots and amount is not None and amount.calculation is not None:
+        report.issues.append(ValidationIssue(
+            path="amount_rub", stage="python", code="unverified_dependency",
+            message="Вычисляемая сумма требует проверки: данные позиций не подтверждены.",
+        ))
+        bad_roots.add("amount_rub")
+
+    for name in bad_roots:
+        checked = fields[name]
+        checked["validation_status"] = "needs_review"
+        try:
+            TypeAdapter(model.model_fields[name].annotation).validate_python(checked)
+        except ValidationError:
+            # Непредставимое в итоговом типе значение остаётся в unverified_fields.
+            checked["value"] = None
+            checked["derivation"] = None
+        report.unverified_fields[name] = proposal.fields[name].model_dump(mode="json")
+    if report.issues:
+        report.status = report.python_status = "needs_review"
+    return model.model_validate(fields), report

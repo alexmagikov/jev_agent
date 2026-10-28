@@ -27,15 +27,18 @@ class DocumentSchema(BaseModel):
 
 
 class FieldResult[ValueT](DocumentSchema):
-    """Решение о заполнении одного поля и его источники."""
+    """Значение и источники; needs_review явно отделяет непроверенный кандидат."""
 
     status: FieldStatus
     value: ValueT | None
     evidence: list[MessageId]
     derivation: str | None
+    validation_status: Literal["needs_review"] | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def validate_value_status(self) -> FieldResult[ValueT]:
+        if self.validation_status == "needs_review":
+            return self
         if self.status == "fillable" and self.value is None:
             raise ValueError("При status='fillable' значение не может быть null")
         if self.status == "fillable" and isinstance(self.value, str) and not self.value.strip():
@@ -77,10 +80,50 @@ class TransferFields(DocumentSchema):
     recipient_relation: FieldResult[str]
 
 
+class ValidationIssue(DocumentSchema):
+    """Замечание к конкретному пути; message не содержит исходных цитат или ответа API."""
+
+    path: str
+    stage: Literal["python", "semantic", "llm_response"]
+    code: str
+    message: str
+
+
+class DocumentValidation(DocumentSchema):
+    """Результат проверок отдельно от статусов заполнения."""
+
+    status: Literal["passed", "needs_review"] = "passed"
+    python_status: Literal["passed", "needs_review"] = "passed"
+    semantic_status: Literal["passed", "needs_review", "not_run"] = "not_run"
+    issues: list[ValidationIssue] = Field(default_factory=list)
+    # Сохраняет цитаты, значения и планы расчётов полей, не прошедших проверку.
+    unverified_fields: dict[str, dict] = Field(default_factory=dict)
+
+
 class ResultBase(DocumentSchema):
     case_id: str = Field(min_length=1)
     # Эталонная разметка не содержит уверенности; предсказания могут её передавать.
     confidence: Probability | None = None
+    validation: DocumentValidation | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    @model_validator(mode="after")
+    def validate_review_report(self):
+        """Непроверенное поле нельзя сериализовать как документ без замечаний."""
+        fields = getattr(self, "fields", None)
+        marked = set()
+        if isinstance(fields, BaseModel):
+            marked = {name for name in type(fields).model_fields
+                      if getattr(fields, name).validation_status == "needs_review"}
+        report = self.validation
+        if marked and (report is None or report.status != "needs_review"):
+            raise ValueError("Непроверенные поля требуют validation.status=needs_review")
+        if report is not None:
+            roots = {issue.path.split(".", 1)[0].split("[", 1)[0] for issue in report.issues if issue.path}
+            if not marked <= roots:
+                raise ValueError("Для каждого непроверенного поля требуется замечание")
+            if (report.status == "passed") != (not report.issues):
+                raise ValueError("Статус проверки должен соответствовать списку замечаний")
+        return self
 
 
 class InvoiceResult(ResultBase):

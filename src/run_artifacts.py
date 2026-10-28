@@ -68,12 +68,15 @@ class RunArtifacts:
         write_errors(errors, self.errors)
         _write_text_atomic(report.model_dump_json(indent=2) + "\n", self.metrics)
         processed = {row.case_id for row in results} | {error["case_id"] for error in errors}
+        review_count = sum(getattr(getattr(row, "validation", None), "status", None) == "needs_review"
+                           for row in results)
         summary = {
             "schema_version": 1, "run_id": self.run_id, "status": status,
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "processed_case_ids": [cid for cid in self.case_ids if cid in processed],
             "unprocessed_case_ids": [cid for cid in self.case_ids if cid not in processed],
-            "successful_cases": len(results), "failed_cases": len(errors),
+            "successful_cases": len(results) - review_count, "needs_review_cases": review_count,
+            "failed_cases": len(errors),
             "metrics_scope": "processed_cases_including_failures", "files": self.files,
             "sha256": {key: hashlib.sha256((self.directory / name).read_bytes()).hexdigest()
                        for key, name in self.files.items()},

@@ -14,11 +14,13 @@ from src.client import DecisionModelClient, DecisionModelError, DecisionModelRat
 from src.schemas.schemas import DocumentType, Probability
 from src.schemas.document_schemas import (
     DocumentResult,
+    DocumentValidation,
+    ValidationIssue,
     InvoiceResult,
     NoDocumentResult,
     TransferResult,
 )
-from src.extraction import ExtractionError, ExtractionProposal, PreparedFields, prepare_fields, validate_messages
+from src.extraction import ExtractionError, ExtractionProposal, PreparedFields, prepare_fields, prepare_partial_fields, validate_messages
 from src.llm import AsyncLLMExtractor, LLMError, LLMRateLimitError, LLMResponseError
 from src.verification import VerificationError, verify_fields
 from src.repairs import merge_repair, plan_repair, repair_roots
@@ -61,7 +63,7 @@ async def classify_document(
 
 
 class PipelineError(RuntimeError):
-    """Кейс не прошёл проверки. Это не document_type=none и не missing."""
+    """Не удалось получить документ: ошибка входа, сервиса или структуры ответа."""
 
 
 class PipelineRateLimitError(PipelineError):
@@ -87,6 +89,7 @@ async def process_document(
     wrong_threshold: float = 0.7,
     debug: bool = False,
     use_verifier: bool = True,
+    allow_partial: bool = True,
 ) -> DocumentResult:
     """Внешняя модель: классификация -> LLM -> Python -> проверка; без: LLM -> LLM -> Python.
 
@@ -138,6 +141,7 @@ async def process_document(
     return await process_selected_document(
         case_id, messages, decision, client, extractor,
         max_attempts=max_attempts, wrong_threshold=wrong_threshold, debug=debug, use_verifier=use_verifier,
+        allow_partial=allow_partial,
     )
 
 
@@ -152,10 +156,15 @@ async def process_selected_document(
     wrong_threshold: float = 0.7,
     debug: bool = False,
     use_verifier: bool = True,
+    allow_partial: bool = True,
     initial_proposal: ExtractionProposal | None = None,
     on_candidate: Callable[[ExtractionProposal, PreparedFields], None] | None = None,
 ) -> DocumentResult:
-    """Общий этап после классификации; initial_proposal позволяет парный аудит одного кандидата."""
+    """Извлекает и ремонтирует документ; после исчерпания попыток сохраняет замечания.
+
+    allow_partial=False оставляет строгий отказ для сравнительных аудитов.
+    initial_proposal позволяет повторно проверить одного и того же кандидата.
+    """
     if not 1 <= max_attempts <= 3 or not 0 < wrong_threshold < 1:
         raise ValueError("Некорректные настройки числа попыток или порога")
     if use_verifier and client is None:
@@ -182,6 +191,10 @@ async def process_selected_document(
     repair_paths: list[str] = []
     validation_failures = []
     failure_reason = "semantic_rejection"
+    latest_proposal: ExtractionProposal | None = None
+    latest_fields: PreparedFields | None = None
+    latest_semantic_feedback: list[str] = []
+    response_issues: list[ValidationIssue] = []
 
     for attempt in range(1, max_attempts + 1):
         if debug:
@@ -193,18 +206,23 @@ async def process_selected_document(
             elif repair_base is None:
                 proposal = await extractor.extract(messages, decision.document_type, feedback=feedback)
             else:
-                proposal = await extractor.extract(
+                reply = await extractor.extract(
                     messages, decision.document_type, feedback=feedback,
                     previous_proposal=repair_base, repair_fields=repair_fields, repair_paths=repair_paths,
                     previous_checked_fields=repair_checked_fields,
                 )
                 # Защита уже проверенных полей, даже если LLM проигнорировала область ремонта.
-                proposal = merge_repair(repair_base, proposal, repair_paths)
+                proposal = merge_repair(repair_base, reply, repair_paths)
 
             if debug:
                 print(f"[{case_id}] Python: проверка источников, форматов и расчётов…", flush=True)
 
+            latest_proposal = proposal.model_copy(deep=True)
+            latest_fields = None
+            latest_semantic_feedback = []
+            response_issues = []
             fields = prepare_fields(proposal, messages, decision.document_type)
+            latest_fields = fields.model_copy(deep=True)
             if on_candidate is not None:
                 on_candidate(proposal.model_copy(deep=True), fields.model_copy(deep=True))
         except (ExtractionError, LLMResponseError) as error:
@@ -214,7 +232,12 @@ async def process_selected_document(
             
             failure_reason = "invalid_extraction"
             feedback = [str(error)]
-            
+            if isinstance(error, LLMResponseError):
+                response_issues.append(ValidationIssue(
+                    path="", stage="llm_response", code=error.code,
+                    message="Повторный ответ LLM не удалось применить. Сохранён предыдущий кандидат.",
+                ))
+
             if isinstance(error, ExtractionError) and proposal is not None:
                 repair_checked_fields = None  # Этот кандидат ещё не прошёл Python целиком.
                 if error.repair_paths:
@@ -256,6 +279,7 @@ async def process_selected_document(
             except (VerificationError, DecisionModelError) as error:
                 raise PipelineError(f"{case_id}: {error}") from error
 
+            latest_semantic_feedback = feedback.copy()
             if debug:
                 print(f"[{case_id}] Замечания {getattr(client, 'name', 'Decision model')}:", flush=True)
                 for remark in feedback:
@@ -268,6 +292,7 @@ async def process_selected_document(
             return result_model(
                 case_id=case_id, document_type=decision.document_type,
                 confidence=decision.confidence, fields=fields,
+                validation=DocumentValidation(semantic_status="passed" if use_verifier else "not_run"),
             )
         
         try:
@@ -277,6 +302,35 @@ async def process_selected_document(
         repair_fields = repair_roots(repair_paths)
         repair_base = proposal.model_copy(deep=True)
         repair_checked_fields = fields.model_copy(deep=True)
+
+    if allow_partial and latest_proposal is not None:
+        if latest_fields is None:
+            try:
+                fields, validation = prepare_partial_fields(latest_proposal, messages, decision.document_type)
+            except ExtractionError:
+                # Несовместимая структура шаблона не является локальной ошибкой поля.
+                fields = None
+        else:
+            fields = latest_fields.model_copy(deep=True)
+            validation = DocumentValidation(semantic_status="needs_review" if latest_semantic_feedback else "not_run")
+        if fields is not None:
+            for remark in latest_semantic_feedback:
+                key = remark.split(": ", 1)[0]
+                path, code = key.split("::", 1)
+                validation.issues.append(ValidationIssue(
+                    path=path, stage="semantic", code=code, message=remark,
+                ))
+                name = repair_roots([path])[0]
+                getattr(fields, name).validation_status = "needs_review"
+                validation.unverified_fields[name] = latest_proposal.fields[name].model_dump(mode="json")
+            validation.issues.extend(response_issues)
+            if validation.issues:
+                validation.status = "needs_review"
+            result_model = InvoiceResult if decision.document_type == "invoice_draft" else TransferResult
+            return result_model(
+                case_id=case_id, document_type=decision.document_type,
+                confidence=decision.confidence, fields=fields, validation=validation,
+            )
 
     summary = "; ".join(feedback)
     raise PipelineRejectionError(

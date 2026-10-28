@@ -13,6 +13,14 @@ class DecisionModelSettings(BaseSettings):
     model: str = Field(default="jev-latest", min_length=1, validation_alias=AliasChoices("DECISION_MODEL", "JEV_MODEL"))
     timeout_seconds: float = Field(default=120, gt=0, le=600, validation_alias="DECISION_TIMEOUT_SECONDS")
     max_retries: int = Field(default=0, ge=0, le=5, validation_alias="DECISION_MAX_RETRIES")
+    input_price_per_million: float | None = Field(
+        default=None, ge=0, allow_inf_nan=False,
+        validation_alias=AliasChoices("DECISION_INPUT_PRICE_PER_MILLION", "JEV_INPUT_PRICE_PER_MILLION"),
+    )
+    output_price_per_million: float | None = Field(
+        default=None, ge=0, allow_inf_nan=False,
+        validation_alias=AliasChoices("DECISION_OUTPUT_PRICE_PER_MILLION", "JEV_OUTPUT_PRICE_PER_MILLION"),
+    )
 
     @field_validator("base_url")
     @classmethod
