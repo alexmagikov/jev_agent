@@ -53,6 +53,9 @@ _RULES = (
     according to the selected document template and the user's dialogue.
     For each question, answer instructions.question; a high probability means that specific error is present.
     Evaluate instructions.field using its meaning, cited evidence and the entire dialogue in messages.
+    instructions.field.path is a logical field label, not a JSON lookup path.
+    Read the checked value from instructions.field.value and its sources from instructions.field.evidence.
+    Calculation plans, when supplied, are in instructions.field.calculation or instructions.field.item_calculations.
     Use only information provided by the user. Assistant messages may clarify what a user’s reply
     refers to, but cannot independently support a value.
     A later explicit correction supersedes the previous value.
@@ -130,6 +133,35 @@ _SEMANTIC_CRITERIA = {
 }
 
 
+_CALCULATION_CHECKS = {
+    "calculation_operands_wrong": (
+        "Does any cited operand in instructions.field.calculation select unsupported, superseded "
+        "or wrongly attributed source data for `{path}`, whose goal is instructions.field.meaning? "
+        "Judge source selection only: the numerical role, owning item/entity and latest applicable "
+        "user corrections for this calculation. Python checked arithmetic. Do not judge the "
+        "expression's operation here; a calculated result need not appear verbatim in messages."
+    ),
+    "calculation_operation_wrong": (
+        "Does instructions.field.calculation.expression use an operation or grouping that "
+        "contradicts the requested calculation of `{path}`, whose goal is instructions.field.meaning? "
+        "Judge the expression only, given the operand roles and the user's requested scope, "
+        "including any discount or unit conversion. Judge source selection separately; "
+        "Python checked arithmetic. Do not require the calculated result to appear verbatim."
+    ),
+}
+
+_CALCULATION_CRITERIA = {
+    "calculation_operands_wrong": {
+        "true": "An operand source is unsupported, superseded or belongs to a different item/entity or numerical role for this specific target.",
+        "false": "All operand sources support the required current roles for this target. Unrelated historical numbers do not invalidate them; the expression's operation is judged separately.",
+    },
+    "calculation_operation_wrong": {
+        "true": "Given the operand roles, the expression's operation or grouping contradicts the requested target or scope under the supplied field rules.",
+        "false": "The expression follows the requested target and scope given the operand roles; a wrong operand source alone is not an operation error. Arithmetic and verbatim result membership are not judged here.",
+    },
+}
+
+
 def _build_verification_checks(fields: PreparedFields) -> dict[str, str]:
     """Конкретные вопросы проверок без общих правил верификатора."""
 
@@ -147,8 +179,23 @@ def _build_verification_checks(fields: PreparedFields) -> dict[str, str]:
         
         if field["status"] == "fillable":
             checks = {
-                "unsupported": f"Is the value of {path} unsupported by its cited user messages?",
-                "wrong_role": f"Does {path} refer to the wrong person, item, bank, document or numerical role?",
+                "unsupported": (
+                    f"Is instructions.field.value for {path} unsupported by its cited user messages "
+                    "in instructions.field.evidence? Use instructions.field.meaning and the supplied rules. "
+                    "Support may be semantic, use permitted normalization, or follow a justified calculation. "
+                    "Check instructions.field.calculation or instructions.field.item_calculations when supplied; "
+                    "judge the source operands and operation. The result need not appear verbatim in the messages."
+                ),
+                "wrong_role": (
+                    f"Does the information in instructions.field.evidence used to justify "
+                    f"instructions.field.value for {path} belong to a different entity or numerical "
+                    "role than required by instructions.field.meaning? Use messages to identify "
+                    "the owner and role of that specific information, including source operands "
+                    "of a calculated value. Other entities' details elsewhere in the dialogue or "
+                    "in the same quote do not make a correctly attributed value wrong. "
+                    "Flag an actual owner or role mismatch; format errors or missing support alone "
+                    "are not this error."
+                ),
                 "superseded": (
                     f"Does the proposed value in instructions.field.value for {path} conflict with "
                     "the latest explicit user correction for this field, or remain filled after "
@@ -157,6 +204,12 @@ def _build_verification_checks(fields: PreparedFields) -> dict[str, str]:
                     "Corrections to other fields do not count."
                 ),
             }
+
+            if "items" in type(fields).model_fields and name.startswith("recipient_"):
+                checks["wrong_role"] += (
+                    " For this invoice, the expected recipient is the buyer/customer being billed; "
+                    "account and bank details must refer to that buyer's account or bank."
+                )
 
             if name == "items":
                 alternative_question = (
@@ -195,29 +248,21 @@ def _build_verification_checks(fields: PreparedFields) -> dict[str, str]:
 
             if name in ("recipient_name", "basis_number", "subject"):
                 checks["noncanonical"] = (
-                    f"Does {path}.value violate the explicit canonical-format rule for this field? "
-                    "Flag only an unambiguous formatting error, not a merely different valid name."
+                    f"Does instructions.field.value for {path} violate the explicit canonical-format rule "
+                    "supplied in instructions.rules for this field? Judge only that rule; permitted "
+                    "normalization and other valid forms are not formatting errors."
                 )
 
             if name == "items":
                 checks["incomplete"] = (
-                    "Does `items` omit an active item or explicitly supplied part of an item? "
-                    "Only flag parts supplied by the user or unambiguously computable from their data; "
-                    "unknown attributes correctly left null are not omissions."
+                    "Does `items` omit any active, unambiguously selected whole line item "
+                    "requested by the user? Apply later corrections and withdrawals. "
+                    "Judge only missing line items; do not assess attributes of items already "
+                    "present, including description, quantity, unit or price. Check missing "
+                    "attributes only in their separate attribute questions. Unchosen alternatives "
+                    "and withdrawn items are not missing line items."
                 )
             
-            if field["derivation"]:
-                calculation_location = (
-                    "Check `quantity_calculation` and `unit_price_calculation` inside each item "
-                    "in instructions.field.item_calculations."
-                    if name == "items"
-                    else "Check instructions.field.calculation."
-                )
-
-                checks["formula_wrong"] = (
-                    f"Does the calculation for {path} misinterpret quantities, unit prices, totals, "
-                    "discount scope, units or requested operations? " + calculation_location
-                )
         else:
             checks = {
                 "missing_supported": (
@@ -377,7 +422,27 @@ def build_verification_questions(
         if messages is not None and field["status"] != "fillable"
     }
 
-    for key, question in _build_verification_checks(fields).items():
+    checks = _build_verification_checks(fields)
+    if proposal is not None:
+        calculation_paths = []
+        for name, field in proposal.fields.items():
+            if prepared[name]["status"] != "fillable":
+                continue
+            if field.calculation is not None:
+                calculation_paths.append(name)
+            if name == "items" and isinstance(field.value, list):
+                for index, item in enumerate(field.value):
+                    for attribute in ("quantity", "unit_price_rub"):
+                        plan_name = "quantity_calculation" if attribute == "quantity" else "unit_price_calculation"
+                        if getattr(item, plan_name) is not None:
+                            calculation_paths.append(f"items[{index}].{attribute}")
+        for path in calculation_paths:
+            # Для расчётного атрибута два узких вопроса заменяют общий value_wrong.
+            checks.pop(f"{path}::value_wrong", None)
+            for kind, text in _CALCULATION_CHECKS.items():
+                checks[f"{path}::{kind}"] = text.format(path=path)
+
+    for key, question in checks.items():
         name = key.split("::", 1)[0].split("[", 1)[0]
         source_candidates = candidates.get(name)
         if source_candidates is not None:
@@ -437,17 +502,63 @@ def build_verification_questions(
             "false": "No. The specific error is absent; unrelated errors do not count.",
         }
 
-        if path.endswith("].unit_price_rub") and key.endswith("::value_wrong") and claim["calculation"] is not None:
-            question = (
-                f"Do the cited operands or operation for `{path}` contradict the latest user "
-                "conditions for this line item's unit price? Check which line and numerical role "
-                "each operand belongs to and whether a later correction replaces it. "
-                "Python checked arithmetic; judge operand selection and the requested operation."
-            )
+        if key.endswith("::unsupported"):
             criteria = {
-                "true": "An operand is unsupported, superseded or from a different line/role, or the operation contradicts the requested unit price.",
-                "false": "The operands and operation follow the latest applicable conditions. A batch total divided by its positive count supports this line's unit price unless different prices are stated. A historical price alone does not invalidate current operands; the result need not appear verbatim.",
+                "true": (
+                    "The cited user information does not support instructions.field.value under "
+                    "instructions.field.meaning and the supplied rules: neither direct semantic support, "
+                    "permitted normalization, nor justified source operands and a calculation support it."
+                ),
+                "false": (
+                    "The cited user information supports instructions.field.value in meaning, by permitted "
+                    "normalization, or by a justified calculation. The result need not appear verbatim in "
+                    "the messages; this does not relax the verbatim requirement for evidence quotes."
+                ),
             }
+        if key.endswith("::noncanonical"):
+            criteria = {
+                "true": (
+                    "instructions.field.value violates an explicit canonical-format rule supplied in "
+                    "instructions.rules for this field."
+                ),
+                "false": (
+                    "instructions.field.value follows the explicit canonical-format rule, including "
+                    "permitted normalization and other valid forms. A different valid form alone is "
+                    "not an error; support and ownership are judged separately."
+                ),
+            }
+
+        if key == "items::incomplete":
+            criteria = {
+                "true": (
+                    "An active, unambiguously selected whole line item requested by the user "
+                    "is absent from items after later corrections and withdrawals."
+                ),
+                "false": (
+                    "No active, unambiguously selected whole line item is missing. Missing or "
+                    "incorrect attributes of items already present belong to separate attribute "
+                    "checks. Unchosen alternatives and withdrawn items are not omissions."
+                ),
+            }
+
+        if key.endswith("::wrong_role") and current["status"] == "fillable":
+            criteria = {
+                "true": (
+                    "The specific cited information or source operands used to justify "
+                    "instructions.field.value belong to a different entity or numerical role "
+                    "than required by instructions.field.meaning."
+                ),
+                "false": (
+                    "The information used to justify the value concerns the intended entity and role. "
+                    "Other entities' details, including a seller's details beside the correct buyer's "
+                    "details in the same quote, do not count. Format errors or missing support alone "
+                    "are not an owner or role mismatch."
+                ),
+            }
+
+        calculation_kind = key.split("::", 1)[1]
+        if calculation_kind in _CALCULATION_CRITERIA:
+            criteria = _CALCULATION_CRITERIA[calculation_kind]
         
         if path.endswith("].description") and key.endswith("::value_wrong"):
             criteria = {
