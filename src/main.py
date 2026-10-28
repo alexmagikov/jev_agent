@@ -13,7 +13,7 @@ from src.client import decision_sdk_options, AsyncCLM, DecisionModelClient, Asyn
 from src.schemas.document_schemas import DocumentResult
 from src.extraction import validate_messages
 from src.llm import AsyncLLMExtractor, LLMUsage
-from src.metrics import FieldMetrics, MetricsReport, calculate_metrics
+from src.metrics import AcceptanceMetrics, FieldMetrics, MetricsReport, calculate_metrics
 from src.pipeline import PipelineError, PipelineRateLimitError, classify_document, process_document
 from src.schemas.schemas import DocumentType, SplitFilter, DataSplit, Probability
 from src.settings import CLMSettings, JeffSettings, DecisionModelSettings, LayaSettings, LLMSettings, PipelineSettings
@@ -63,11 +63,12 @@ def load_cases(path: Path, split: SplitFilter = "dev") -> list[InputCase]:
                     f"Некорректная строка {line_number} в {path}"
                 ) from error
 
+            # Один case_id в разных split дал бы неоднозначную разметку.
+            if case.case_id in seen:
+                raise ValueError(f"Повторяющийся case_id в {path}: {case.case_id}")
+            seen.add(case.case_id)
             if split == "all" or case.split == split:
-                if case.case_id in seen:
-                    raise ValueError(f"Повторяющийся case_id в {path}: {case.case_id}")
                 validate_messages(case.messages)
-                seen.add(case.case_id)
                 cases.append(case)
 
     return cases
@@ -154,6 +155,8 @@ def print_metrics(report: MetricsReport) -> None:
     if report.field_metrics_evaluated:
         print(f"Полностью правильные документы: {report.exact_document_correct}/{report.total_cases} "
               f"({_percent(report.exact_document_accuracy)})")
+    if report.acceptance is not None:
+        print_acceptance_metrics(report.acceptance, report.total_cases)
     if report.document_type_mismatches:
         print("\nНесовпадения по типу документа:")
         for mismatch in report.document_type_mismatches:
@@ -191,11 +194,26 @@ def _percent(value: float | None) -> str:
     return f"{value:.1%}" if value is not None else "н/д"
 
 
+def print_acceptance_metrics(metrics: AcceptanceMetrics, total_cases: int) -> None:
+    """Общий вывод принятия результатов для CLI и сторон парного аудита."""
+    print(f"Автоматически приняты: {metrics.accepted_cases}/{total_cases} "
+          f"({_percent(metrics.automatic_acceptance_rate)})")
+    print(f"Ошибки среди принятых: {metrics.accepted_incorrect}/{metrics.accepted_cases} "
+          f"({_percent(metrics.accepted_error_rate)})")
+    print(f"Правильные автоматически принятые: {metrics.accepted_correct}/{total_cases} "
+          f"({_percent(metrics.correct_automatic_acceptance_rate)})")
+    print(f"Требуют проверки: {metrics.needs_review_cases}/{total_cases} "
+          f"({_percent(metrics.needs_review_rate)}); правильных: {metrics.needs_review_correct}; "
+          f"ошибочных: {metrics.needs_review_incorrect}")
+    if metrics.unknown_validation_cases:
+        print(f"Результаты без статуса проверки: {metrics.unknown_validation_cases}")
+
+
 def _print_field_metrics(name: str, metrics: FieldMetrics) -> None:
     print(
         f"{name}: \n"
-        f"        precision={metrics.precision:.1%},\n"
-        f"        recall={metrics.recall:.1%},\n"
+        f"        precision={_percent(metrics.precision)},\n"
+        f"        recall={_percent(metrics.recall)},\n"
         f"        value_accuracy={_percent(metrics.value_accuracy)},\n"
         f"        value_precision={_percent(metrics.value_precision)},\n"
         f"        value_recall={_percent(metrics.value_recall)},\n"
@@ -205,7 +223,7 @@ def _print_field_metrics(name: str, metrics: FieldMetrics) -> None:
         f"        status_accuracy={_percent(metrics.status_accuracy)} ({metrics.correct_statuses}/{metrics.expected_fields}),\n"
         f"        field_accuracy={_percent(metrics.field_accuracy)} ({metrics.correct_status_values}/{metrics.expected_fields}),\n"
         f"        совпадение наборов ID источников={_percent(metrics.evidence_id_exact_match)},\n"
-        f"        лишние заполнения={metrics.overfill_rate:.1%}\n"
+        f"        лишние заполнения={_percent(metrics.overfill_rate)}\n"
         f"        (TP={metrics.true_positives}, FP={metrics.false_positives}, "
         f"FN={metrics.false_negatives})\n"
     )

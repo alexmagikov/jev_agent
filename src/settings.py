@@ -5,6 +5,15 @@ from pydantic import AliasChoices, Field, SecretStr, field_validator, model_vali
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _validate_base_url(value: str, env_name: str) -> str:
+    url = urlsplit(value)
+    local_http = url.scheme == "http" and url.hostname in ("localhost", "127.0.0.1", "::1")
+    if (not url.hostname or (url.scheme != "https" and not local_http)
+            or url.username or url.password or url.query or url.fragment):
+        raise ValueError(f"{env_name}: нужен HTTPS либо HTTP localhost, без credentials/query/fragment")
+    return value.rstrip("/")
+
+
 class DecisionModelSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -25,12 +34,7 @@ class DecisionModelSettings(BaseSettings):
     @field_validator("base_url")
     @classmethod
     def validate_base_url(cls, value: str) -> str:
-        url = urlsplit(value)
-        local_http = url.scheme == "http" and url.hostname in ("localhost", "127.0.0.1", "::1")
-        if (not url.hostname or (url.scheme != "https" and not local_http)
-                or url.username or url.password or url.query or url.fragment):
-            raise ValueError("DECISION_BASE_URL: нужен HTTPS либо HTTP localhost, без credentials/query/fragment")
-        return value.rstrip("/")
+        return _validate_base_url(value, "DECISION_BASE_URL")
 
 
 class JeffSettings(BaseSettings):
@@ -43,17 +47,12 @@ class JeffSettings(BaseSettings):
     api_key: SecretStr | None = Field(default=None, min_length=1, validation_alias="JEFF_API_KEY")
     timeout_seconds: float = Field(default=120, gt=0, le=600, validation_alias="JEFF_TIMEOUT_SECONDS")
     max_retries: int = Field(default=0, ge=0, le=5, validation_alias="JEFF_MAX_RETRIES")
-    wrong_threshold: float = Field(default=0.7, gt=0, lt=1, validation_alias="JEFF_WRONG_THRESHOLD")
+    wrong_threshold: float = Field(default=0.8, gt=0, lt=1, validation_alias="JEFF_WRONG_THRESHOLD")
 
     @field_validator("base_url")
     @classmethod
     def validate_base_url(cls, value: str) -> str:
-        url = urlsplit(value)
-        local_http = url.scheme == "http" and url.hostname in ("localhost", "127.0.0.1", "::1")
-        if (not url.hostname or (url.scheme != "https" and not local_http)
-                or url.username or url.password or url.query or url.fragment):
-            raise ValueError("JEFF_BASE_URL: нужен HTTPS либо HTTP localhost, без credentials/query/fragment")
-        return value.rstrip("/")
+        return _validate_base_url(value, "JEFF_BASE_URL")
 
 
 class CLMSettings(BaseSettings):
@@ -66,17 +65,12 @@ class CLMSettings(BaseSettings):
     api_key: SecretStr | None = Field(default=None, min_length=1, validation_alias="CLM_API_KEY")
     timeout_seconds: float = Field(default=120, gt=0, le=600, validation_alias="CLM_TIMEOUT_SECONDS")
     max_retries: int = Field(default=0, ge=0, le=5, validation_alias="CLM_MAX_RETRIES")
-    wrong_threshold: float = Field(default=0.7, gt=0, lt=1, validation_alias="CLM_WRONG_THRESHOLD")
+    wrong_threshold: float = Field(default=0.8, gt=0, lt=1, validation_alias="CLM_WRONG_THRESHOLD")
 
     @field_validator("base_url")
     @classmethod
     def validate_base_url(cls, value: str) -> str:
-        url = urlsplit(value)
-        local_http = url.scheme == "http" and url.hostname in ("localhost", "127.0.0.1", "::1")
-        if (not url.hostname or (url.scheme != "https" and not local_http)
-                or url.username or url.password or url.query or url.fragment):
-            raise ValueError("CLM_BASE_URL: нужен HTTPS либо HTTP localhost, без credentials/query/fragment")
-        return value.rstrip("/")
+        return _validate_base_url(value, "CLM_BASE_URL")
 
 
 class LayaSettings(BaseSettings):
@@ -89,19 +83,14 @@ class LayaSettings(BaseSettings):
     api_key: SecretStr | None = Field(default=None, min_length=1, validation_alias="LAYA_API_KEY")
     timeout_seconds: float = Field(default=120, gt=0, le=600, validation_alias="LAYA_TIMEOUT_SECONDS")
     max_retries: int = Field(default=0, ge=0, le=5, validation_alias="LAYA_MAX_RETRIES")
-    wrong_threshold: float = Field(default=0.7, gt=0, lt=1, validation_alias="LAYA_WRONG_THRESHOLD")
+    wrong_threshold: float = Field(default=0.8, gt=0, lt=1, validation_alias="LAYA_WRONG_THRESHOLD")
     max_len: int = Field(default=8192, ge=1, le=8192, validation_alias="LAYA_MAX_LEN")
     head_max_len: int = Field(default=2048, ge=1, le=8192, validation_alias="LAYA_HEAD_MAX_LEN")
 
     @field_validator("base_url")
     @classmethod
     def validate_base_url(cls, value: str) -> str:
-        url = urlsplit(value)
-        local_http = url.scheme == "http" and url.hostname in ("localhost", "127.0.0.1", "::1")
-        if (not url.hostname or (url.scheme != "https" and not local_http)
-                or url.username or url.password or url.query or url.fragment):
-            raise ValueError("LAYA_BASE_URL: нужен HTTPS либо HTTP localhost, без credentials/query/fragment")
-        return value.rstrip("/")
+        return _validate_base_url(value, "LAYA_BASE_URL")
 
 
 class LLMSettings(BaseSettings):
@@ -159,16 +148,11 @@ class LLMSettings(BaseSettings):
     @field_validator("base_url")
     @classmethod
     def validate_base_url(cls, value: str) -> str:
-        url = urlsplit(value)
-        local_http = url.scheme == "http" and url.hostname in ("localhost", "127.0.0.1", "::1")
-        if (not url.hostname or (url.scheme != "https" and not local_http)
-                or url.username or url.password or url.query or url.fragment):
-            raise ValueError("LLM_BASE_URL: нужен HTTPS либо HTTP localhost, без credentials/query/fragment")
-        return value.rstrip("/")
+        return _validate_base_url(value, "LLM_BASE_URL")
 
 
 class PipelineSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     max_attempts: int = Field(default=2, ge=1, le=3, validation_alias="EXTRACTION_MAX_ATTEMPTS")
-    wrong_threshold: float = Field(default=0.7, gt=0, lt=1, validation_alias=AliasChoices("DECISION_WRONG_THRESHOLD", "JEV_WRONG_THRESHOLD"))
+    wrong_threshold: float = Field(default=0.8, gt=0, lt=1, validation_alias=AliasChoices("DECISION_WRONG_THRESHOLD", "JEV_WRONG_THRESHOLD"))

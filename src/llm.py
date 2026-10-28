@@ -20,7 +20,7 @@ from src.field_rules import (
     INVOICE_AMOUNT_RULE, INVOICE_SUBJECT_RULE, ITEM_DESCRIPTION_RULE, ITEM_QUANTITY_RULE,
     ITEM_UNIT_PRICE_RULE, ITEM_UNIT_RULE, TRANSFER_ALIAS_RULES, QUOTED_PRODUCT_NAME_RULE,
     ITEMS_PRESENCE_RULE, ITEMS_SELECTION_RULE, ITEMS_EXAMPLES, RECIPIENT_NAME_RULE, BASIS_NUMBER_RULE,
-    VAT_MODE_RULE, VAT_RATE_RULE, TRANSFER_RECIPIENT_RULE,
+    VAT_MODE_RULE, VAT_RATE_RULE, TRANSFER_RECIPIENT_RULE, BASIS_DATE_RULE, DESTINATION_BANK_RULE,
 )
 from src.settings import LLMSettings
 from src.repairs import (
@@ -191,7 +191,7 @@ _PROMPT_INVOICE_REQUISITES = """Реквизиты должны относить
 ИНН, БИК, счета, email и номер основания копируй дословно строкой.
 ИНН должен содержать ровно 10 или 12 цифр. Не дополняй и не исправляй его самостоятельно.
 При другой длине установи status='invalid', value=null и сохрани исходную цитату в evidence.
-У даты основания формат - YYYY-MM-DD. Не переименовывай то, что назвал пользователь, и не добавляй отсутствующие детали."""
+Не переименовывай то, что назвал пользователь, и не добавляй отсутствующие детали."""
 
 _PROMPT_TRANSFER_RULES = """Заполняй только поля перевода на собственную карту пользователя.
 Не восстанавливай скрытые цифры карты. В destination_card_masked копируй дословно
@@ -228,7 +228,7 @@ name операнда — только строчные латинские бу�
 expression использует имена operands, + - * / и скобки. Допустимы константы 0,1,100
 только для процентов/преобразования единиц. Никаких функций, кода, степеней или ссылок
 на результаты других формул. Подставляй в каждую формулу исходные числа. Python сам
-выполнит расчёт. Сохраняй status='fillable' и value=null для вычисляемого поля с calculation;
+выполнит расчёт и округлит сумму или цену единицы до копеек; количество не округляется. Сохраняй status='fillable' и value=null для вычисляемого поля с calculation;
 Источники поля всё равно нужны.
 При прямом значении или отсутствии данных соответствующую calculation оставь null.
 Не передавай одновременно число и формулу его вычисления. Если итог неоднозначен, не выдумывай формулу.
@@ -317,6 +317,7 @@ def build_extraction_prompt(document_type: SupportedDocumentType) -> str:
             _PROMPT_INVOICE_REQUISITES,
             RECIPIENT_NAME_RULE,
             BASIS_NUMBER_RULE,
+            BASIS_DATE_RULE,
             VAT_MODE_RULE,
             VAT_RATE_RULE,
             _PROMPT_ITEMS_STRUCTURE,
@@ -336,7 +337,7 @@ def build_extraction_prompt(document_type: SupportedDocumentType) -> str:
             _PROMPT_ITEMS_REPAIR,
         )
     elif document_type == "transfer_draft":
-        specific = (_PROMPT_TRANSFER_RULES, TRANSFER_RECIPIENT_RULE, *TRANSFER_ALIAS_RULES.values())
+        specific = (_PROMPT_TRANSFER_RULES, TRANSFER_RECIPIENT_RULE, DESTINATION_BANK_RULE, *TRANSFER_ALIAS_RULES.values())
     else:
         raise ValueError("Неизвестный тип документа для извлечения")
     return "\n\n".join((*common, *specific, _PROMPT_FEEDBACK))

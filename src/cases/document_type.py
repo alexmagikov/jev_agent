@@ -49,12 +49,15 @@ class DocumentTypeInstructions(BaseModel):
     request_rule: str = (
         "A request may be an imperative, a stated intention, or a short document-and-details "
         "phrase. The user need not say 'draft' or 'черновик'. Follow-up answers supplying "
-        "details and corrections to an existing request keep that request active."
+        "details and corrections to an existing request keep that request active, with "
+        "support evaluated after those updates."
     )
     precedence_rule: str = (
         "A later explicit replacement, cancellation, or instruction to postpone preparation "
-        "overrides the earlier request. A correction to an amount, recipient, tax rate, "
-        "or card changes details, not the document type. A mere mention of another "
+        "overrides the earlier request. Apply corrections to an amount, recipient, tax rate, "
+        "or card before checking the supported-draft criteria. Preserve the document type "
+        "only if the updated request still satisfies those criteria. A recipient/card "
+        "correction can change whether a transfer is to the user's own card. A mere mention of another "
         "document does not replace the active request. A new request after cancellation "
         "can become active again."
     )
@@ -90,6 +93,10 @@ class DocumentTypeQuestion(BaseModel):
             "An active request to prepare a transfer of the user's own money to their "
             "own card, including from their business account. Ownership must follow "
             "from the user's words, such as 'себе', 'на свою карту', or 'на мою карту'. "
+            "Evaluate ownership in the latest applicable request after corrections, "
+            "not from a superseded recipient or card. A correction from someone else's "
+            "card to the user's own card can make this choice applicable, and the reverse "
+            "makes it inapplicable. "
             "Missing amount, bank, source account, or card details do not rule it out. "
             "Exclude transfers to someone else, reports of completed transfers, "
             "and information-only questions. This choice does not mean executing a transfer."
@@ -110,8 +117,10 @@ class NoneReasonQuestion(BaseModel):
         "From `messages`, independently determine why there is no active request for "
         "a payment invoice ('счёт на оплату') or a transfer to the user's own card. "
         "Read user messages chronologically; assistant messages provide context only. "
-        "Supplying or correcting details preserves a request; missing details are not "
-        "a reason to reject it. A later replacement, cancellation, or explicit postponement "
+        "Apply all later corrections before checking whether the current request is supported. "
+        "Supplying or correcting details keeps the request active, but a recipient/card "
+        "correction may make an own-card transfer unsupported or restore its support. "
+        "Missing details are not a reason to reject it. A later replacement, cancellation, or explicit postponement "
         "takes precedence, and a later renewed request may become active again. "
         "If the current request is for an unsupported document or operation, choose "
         "'other_document'. Otherwise, if a supported request remains cancelled or "
@@ -129,7 +138,9 @@ class NoneReasonQuestion(BaseModel):
         other_document=(
             "The current request is for a different document or operation, such as "
             "счёт-фактура, УПД, акт, or a transfer to another person's card, "
-            "rather than either supported draft."
+            "rather than either supported draft. This includes a recipient/card correction "
+            "that leaves the current transfer directed to someone else; the earlier "
+            "own-card request no longer establishes support."
         ),
         cancelled=(
             "An earlier supported request was explicitly cancelled, withdrawn, or "

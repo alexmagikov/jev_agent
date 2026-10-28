@@ -26,7 +26,6 @@ from .extraction_schemas import (
 from .schemas import (
     DataSplit,
     DocumentType,
-    Message,
     NoneReasonType,
     Probability,
     Response,
@@ -46,7 +45,6 @@ __all__ = [
     "InvoiceFields",
     "InvoiceItem",
     "InvoiceResult",
-    "Message",
     "NoDocumentResult",
     "NoneReasonType",
     "Operand",

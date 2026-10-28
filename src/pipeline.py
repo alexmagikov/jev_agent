@@ -86,7 +86,7 @@ async def process_document(
     extractor: AsyncLLMExtractor,
     *,
     max_attempts: int = 2,
-    wrong_threshold: float = 0.7,
+    wrong_threshold: float = 0.8,
     debug: bool = False,
     use_verifier: bool = True,
     allow_partial: bool = True,
@@ -153,7 +153,7 @@ async def process_selected_document(
     extractor: AsyncLLMExtractor,
     *,
     max_attempts: int = 2,
-    wrong_threshold: float = 0.7,
+    wrong_threshold: float = 0.8,
     debug: bool = False,
     use_verifier: bool = True,
     allow_partial: bool = True,
@@ -162,6 +162,8 @@ async def process_selected_document(
 ) -> DocumentResult:
     """Извлекает и ремонтирует документ; после исчерпания попыток сохраняет замечания.
 
+    Из всех кандидатов сохраняется лучший: прошедший Python, затем с меньшим
+    числом непроверенных полей, при равенстве — более поздний.
     allow_partial=False оставляет строгий отказ для сравнительных аудитов.
     initial_proposal позволяет повторно проверить одного и того же кандидата.
     """
@@ -182,6 +184,7 @@ async def process_selected_document(
             confidence=decision.confidence,
             fields={},
             reason=decision.reason,
+            validation=DocumentValidation(),
         )
 
     feedback: list[str] = []
@@ -191,9 +194,8 @@ async def process_selected_document(
     repair_paths: list[str] = []
     validation_failures = []
     failure_reason = "semantic_rejection"
-    latest_proposal: ExtractionProposal | None = None
-    latest_fields: PreparedFields | None = None
-    latest_semantic_feedback: list[str] = []
+    # Кандидат, его поля после Python (None — не прошёл) и замечания верификатора.
+    candidates: list[tuple[ExtractionProposal, PreparedFields | None, list[str]]] = []
     response_issues: list[ValidationIssue] = []
 
     for attempt in range(1, max_attempts + 1):
@@ -217,12 +219,8 @@ async def process_selected_document(
             if debug:
                 print(f"[{case_id}] Python: проверка источников, форматов и расчётов…", flush=True)
 
-            latest_proposal = proposal.model_copy(deep=True)
-            latest_fields = None
-            latest_semantic_feedback = []
             response_issues = []
             fields = prepare_fields(proposal, messages, decision.document_type)
-            latest_fields = fields.model_copy(deep=True)
             if on_candidate is not None:
                 on_candidate(proposal.model_copy(deep=True), fields.model_copy(deep=True))
         except (ExtractionError, LLMResponseError) as error:
@@ -235,10 +233,11 @@ async def process_selected_document(
             if isinstance(error, LLMResponseError):
                 response_issues.append(ValidationIssue(
                     path="", stage="llm_response", code=error.code,
-                    message="Повторный ответ LLM не удалось применить. Сохранён предыдущий кандидат.",
+                    message="Повторный ответ LLM не удалось применить. Сохранён лучший из прежних кандидатов.",
                 ))
 
             if isinstance(error, ExtractionError) and proposal is not None:
+                candidates.append((proposal.model_copy(deep=True), None, []))
                 repair_checked_fields = None  # Этот кандидат ещё не прошёл Python целиком.
                 if error.repair_paths:
                     repair_paths = plan_repair(proposal, list(error.repair_paths))
@@ -279,7 +278,6 @@ async def process_selected_document(
             except (VerificationError, DecisionModelError) as error:
                 raise PipelineError(f"{case_id}: {error}") from error
 
-            latest_semantic_feedback = feedback.copy()
             if debug:
                 print(f"[{case_id}] Замечания {getattr(client, 'name', 'Decision model')}:", flush=True)
                 for remark in feedback:
@@ -295,6 +293,7 @@ async def process_selected_document(
                 validation=DocumentValidation(semantic_status="passed" if use_verifier else "not_run"),
             )
         
+        candidates.append((proposal.model_copy(deep=True), fields.model_copy(deep=True), feedback.copy()))
         try:
             repair_paths = plan_repair(proposal, [remark.split("::", 1)[0] for remark in feedback])
         except ValueError as error:
@@ -303,26 +302,16 @@ async def process_selected_document(
         repair_base = proposal.model_copy(deep=True)
         repair_checked_fields = fields.model_copy(deep=True)
 
-    if allow_partial and latest_proposal is not None:
-        if latest_fields is None:
-            try:
-                fields, validation = prepare_partial_fields(latest_proposal, messages, decision.document_type)
-            except ExtractionError:
-                # Несовместимая структура шаблона не является локальной ошибкой поля.
-                fields = None
-        else:
-            fields = latest_fields.model_copy(deep=True)
-            validation = DocumentValidation(semantic_status="needs_review" if latest_semantic_feedback else "not_run")
-        if fields is not None:
-            for remark in latest_semantic_feedback:
-                key = remark.split(": ", 1)[0]
-                path, code = key.split("::", 1)
-                validation.issues.append(ValidationIssue(
-                    path=path, stage="semantic", code=code, message=remark,
-                ))
-                name = repair_roots([path])[0]
-                getattr(fields, name).validation_status = "needs_review"
-                validation.unverified_fields[name] = latest_proposal.fields[name].model_dump(mode="json")
+    if allow_partial:
+        best = None
+        for index, (proposal, checked_fields, remarks) in enumerate(candidates):
+            reviewed = _review_candidate(proposal, checked_fields, remarks, messages, decision.document_type)
+            if reviewed is not None:
+                rank = (checked_fields is not None, -len(reviewed[1].unverified_fields), index)
+                if best is None or rank > best[0]:
+                    best = (rank, reviewed)
+        if best is not None:
+            fields, validation = best[1]
             validation.issues.extend(response_issues)
             if validation.issues:
                 validation.status = "needs_review"
@@ -337,3 +326,31 @@ async def process_selected_document(
         f"{case_id}: проверки не пройдены за {max_attempts} попытки: {summary}",
         failure_reason=failure_reason, validation_failures=validation_failures,
     )
+
+
+def _review_candidate(
+    proposal: ExtractionProposal,
+    checked_fields: PreparedFields | None,
+    remarks: list[str],
+    messages: list[DocumentMessage],
+    document_type: str,
+) -> tuple[PreparedFields, DocumentValidation] | None:
+    """Поля и замечания сохраняемого кандидата; None — несовместимая структура шаблона."""
+    if checked_fields is None:
+        try:
+            return prepare_partial_fields(proposal, messages, document_type)
+        except ExtractionError:
+            # Несовместимая структура шаблона не является локальной ошибкой поля.
+            return None
+    fields = checked_fields.model_copy(deep=True)
+    validation = DocumentValidation(semantic_status="needs_review" if remarks else "not_run")
+    for remark in remarks:
+        key = remark.split(": ", 1)[0]
+        path, code = key.split("::", 1)
+        validation.issues.append(ValidationIssue(
+            path=path, stage="semantic", code=code, message=remark,
+        ))
+        name = repair_roots([path])[0]
+        getattr(fields, name).validation_status = "needs_review"
+        validation.unverified_fields[name] = proposal.fields[name].model_dump(mode="json")
+    return fields, validation

@@ -22,12 +22,12 @@ class FieldMetrics(BaseModel):
     true_positives: int
     false_positives: int
     false_negatives: int
-    precision: float
-    recall: float
+    precision: float | None
+    recall: float | None
     value_accuracy: float | None
     alias_aware_value_accuracy: float | None = None
     evidence_id_exact_match: float | None
-    overfill_rate: float
+    overfill_rate: float | None
     expected_values: int
     predicted_values: int
     correct_values: int
@@ -48,7 +48,7 @@ class FieldMetrics(BaseModel):
         return self.evidence_id_exact_match
 
     @property
-    def unsupported_fill_rate(self) -> float:
+    def unsupported_fill_rate(self) -> float | None:
         """Старое Python-имя; это доля лишних заполнений, а не оценка доказательств."""
         return self.overfill_rate
 
@@ -62,16 +62,33 @@ class DocumentTypeMismatch(BaseModel):
     confidence: Probability | None = None
 
 
+class AcceptanceMetrics(BaseModel):
+    """Принятие результата независимо от правильности его содержимого."""
+
+    accepted_cases: int
+    needs_review_cases: int
+    unknown_validation_cases: int
+    accepted_correct: int
+    accepted_incorrect: int
+    needs_review_correct: int
+    needs_review_incorrect: int
+    automatic_acceptance_rate: float | None
+    needs_review_rate: float | None
+    accepted_error_rate: float | None
+    correct_automatic_acceptance_rate: float | None
+
+
 class MetricsReport(BaseModel):
     """Итог сравнения предсказаний c правильными результатами."""
 
-    metrics_version: int = 2
+    metrics_version: int = 4
     total_cases: int
     predicted_cases: int
     prediction_coverage: float | None
     field_metrics_evaluated: bool
     exact_document_correct: int | None
     exact_document_accuracy: float | None
+    acceptance: AcceptanceMetrics | None = None
     missing_predictions: list[str]
     document_type_correct: int
     document_type_accuracy: float
@@ -106,6 +123,10 @@ def calculate_metrics(
     шаблон и отсутствие поля — отдельные столбцы, не status=missing.
     Полностью верный документ совпадает по типу, набору полей, статусам и значениям;
     evidence, derivation, confidence и текст reason в это сравнение не входят.
+    Результат validation не меняет правильность содержимого. acceptance отдельно
+    учитывает явные passed и needs_review, а отсутствие статуса — как неизвестное.
+    Доли принятия и правильного принятия используют все кейсы; доля ошибок среди
+    принятых — только passed. При нулевом знаменателе доля полей равна None.
     Для classification передаётся evaluate_fields=False.
     """
 
@@ -144,8 +165,9 @@ def calculate_metrics(
     if not evaluate_fields:
         label_fields, predicted_fields = {}, {}
     predicted_types = {case_id: row["document_type"] for case_id, row in predictions_by_id.items()}
-    exact_documents = (sum(_exact_document(label, predictions_by_id.get(case_id))
-                           for case_id, label in labels_by_id.items()) if evaluate_fields else None)
+    document_correctness = ({case_id: _exact_document(label, predictions_by_id.get(case_id))
+                             for case_id, label in labels_by_id.items()} if evaluate_fields else {})
+    exact_documents = sum(document_correctness.values()) if evaluate_fields else None
 
     by_document_type = {
         document_type: _field_metrics(
@@ -163,6 +185,7 @@ def calculate_metrics(
         field_metrics_evaluated=evaluate_fields,
         exact_document_correct=exact_documents,
         exact_document_accuracy=_ratio(exact_documents, len(labels_by_id)) if evaluate_fields else None,
+        acceptance=_acceptance_metrics(predictions_by_id, document_correctness) if evaluate_fields else None,
         missing_predictions=missing_predictions,
         document_type_correct=document_type_correct,
         document_type_accuracy=_divide(
@@ -243,6 +266,33 @@ def _exact_document(expected: JsonRow, actual: JsonRow | None) -> bool:
     )
 
 
+def _acceptance_metrics(
+    predictions: Mapping[str, JsonRow], correctness: Mapping[str, bool],
+) -> AcceptanceMetrics:
+    counts = {"passed": [0, 0], "needs_review": [0, 0]}
+    unknown = 0
+    for case_id, prediction in predictions.items():
+        validation = prediction.get("validation")
+        status = validation.get("status") if isinstance(validation, Mapping) else None
+        if status not in ("passed", "needs_review"):
+            unknown += 1
+            continue
+        counts[status][0 if correctness[case_id] else 1] += 1
+    accepted_correct, accepted_incorrect = counts["passed"]
+    review_correct, review_incorrect = counts["needs_review"]
+    accepted = accepted_correct + accepted_incorrect
+    review = review_correct + review_incorrect
+    return AcceptanceMetrics(
+        accepted_cases=accepted, needs_review_cases=review, unknown_validation_cases=unknown,
+        accepted_correct=accepted_correct, accepted_incorrect=accepted_incorrect,
+        needs_review_correct=review_correct, needs_review_incorrect=review_incorrect,
+        automatic_acceptance_rate=_ratio(accepted, len(correctness)),
+        needs_review_rate=_ratio(review, len(correctness)),
+        accepted_error_rate=_ratio(accepted_incorrect, accepted),
+        correct_automatic_acceptance_rate=_ratio(accepted_correct, len(correctness)),
+    )
+
+
 def _for_document_type(
     fields: Mapping[FieldKey, JsonRow],
     document_type: DocumentType,
@@ -317,8 +367,8 @@ def _field_metrics(
         true_positives=true_positives,
         false_positives=false_positives,
         false_negatives=false_negatives,
-        precision=_divide(true_positives, predicted_positive_count),
-        recall=_divide(true_positives, actual_positive_count),
+        precision=_ratio(true_positives, predicted_positive_count),
+        recall=_ratio(true_positives, actual_positive_count),
         value_accuracy=(
             correct_values / true_positives if true_positives else None
         ),
@@ -328,10 +378,7 @@ def _field_metrics(
         evidence_id_exact_match=(
             correct_evidence / true_positives if true_positives else None
         ),
-        overfill_rate=_divide(
-            false_positives,
-            predicted_positive_count,
-        ),
+        overfill_rate=_ratio(false_positives, predicted_positive_count),
     )
 
 

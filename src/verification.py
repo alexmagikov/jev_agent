@@ -14,7 +14,7 @@ from src.field_rules import (
     INVOICE_AMOUNT_RULE, INVOICE_SUBJECT_RULE, ITEM_DESCRIPTION_SEMANTIC_RULE, ITEM_QUANTITY_RULE,
     ITEM_UNIT_PRICE_RULE, ITEM_UNIT_RULE, TRANSFER_ALIAS_RULES, TRANSFER_RECIPIENT_RULE,
     ITEMS_PRESENCE_RULE, ITEMS_SELECTION_RULE, ITEMS_EXAMPLES, RECIPIENT_NAME_RULE, BASIS_NUMBER_RULE,
-    VAT_MODE_RULE, VAT_RATE_RULE, QUOTED_PRODUCT_NAME_RULE,
+    VAT_MODE_RULE, VAT_RATE_RULE, QUOTED_PRODUCT_NAME_RULE, BASIS_DATE_RULE, DESTINATION_BANK_RULE,
 )
 from src.schemas.schemas import Probability
 
@@ -91,6 +91,7 @@ _ITEMS_RULES = " ".join((
 _FIELD_RULES = {
     "recipient_name": RECIPIENT_NAME_RULE,
     "basis_number": BASIS_NUMBER_RULE,
+    "basis_date": BASIS_DATE_RULE,
     **TRANSFER_ALIAS_RULES,
     "recipient_relation": TRANSFER_RECIPIENT_RULE,
     "vat_mode": VAT_MODE_RULE,
@@ -588,6 +589,7 @@ def build_verification_questions(
         questions[key] = NoulQuestion(
             instructions={"question": question, "field": claim, "rules": [part for part in
                           (_FIELD_RULES.get(name), VAT_MODE_RULE if name == "vat_rate_percent" else "",
+                           DESTINATION_BANK_RULE if name == "destination_bank" else "",
                            item_rules, semantic_rule, quoted_name_rule,
                            _STATUS_RULE if format_check is not None and current["status"] != "fillable"
                            and not key.endswith("::status_wrong") else "") if part]},

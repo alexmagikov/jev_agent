@@ -20,6 +20,12 @@ TRANSFER_ALIAS_RULES = {
     for (document_type, name), groups in PERMITTED_ALIASES.items()
 }
 
+DESTINATION_BANK_RULE = (
+    "destination_bank is the bank name in nominative case: 'в Альфа-Банке' / 'Альфа-Банка' -> 'Альфа-Банк', "
+    "'в Сбербанке' -> 'Сбербанк'. Change only the grammatical case; never replace, expand or translate "
+    "the name the user used ('Сбер' stays 'Сбер'). Case normalization alone is not an unsupported value."
+)
+
 TRANSFER_RECIPIENT_RULE = (
     "recipient_relation='self' when the user explicitly requests a transfer to themselves ('себе') "
     "or their own card. Missing card/bank details do not negate self. The selected document type "
@@ -64,6 +70,17 @@ RECIPIENT_NAME_RULE = (
 BASIS_NUMBER_RULE = (
     "Copy the identifier without № or labels договор/номер; preserve zeros, letters, slashes and "
     "hyphens."
+)
+
+BASIS_DATE_RULE = (
+    "basis_date uses YYYY-MM-DD. Day, month and year must be supported by user messages about "
+    "the same contract or basis, with later corrections applied. Never assume the current year "
+    "or derive a year from the contract number. A year from another user message may complete "
+    "the date only if it unambiguously refers to the same contract or basis; cite the messages "
+    "supplying the date parts. An explicitly supplied but incomplete date, such as 'по договору "
+    "от 12 мая' without a supported year, requires status='invalid', value=null and verbatim "
+    "evidence of the incomplete date. If no date was supplied, use status='missing', value=null. "
+    "An unambiguous complete valid date is fillable in ISO format. For this field calculation=null."
 )
 
 VAT_MODE_RULE = (

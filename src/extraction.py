@@ -5,7 +5,7 @@ import json
 import math
 import re
 from datetime import date
-from decimal import Decimal, DecimalException, localcontext
+from decimal import ROUND_HALF_UP, Decimal, DecimalException, localcontext
 from functools import lru_cache
 from pathlib import Path
 
@@ -291,18 +291,24 @@ def _calculate(
                     return left / right
             raise ExtractionError("В формуле разрешены только операнды, +, -, *, / и скобки", code="invalid_calculation")
 
+        # Сумма и цена единицы — деньги: округляем до копеек, половину копейки вверх.
+        money = target == "amount_rub" or target.endswith(".unit_price_rub")
         with localcontext() as context:
             context.prec = 40
             value = evaluate(tree.body)
+            rounded = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if money else value
         if used != set(values):
             raise ExtractionError("Все объявленные операнды должны использоваться в формуле", code="invalid_calculation")
-        numeric = float(value)
-        if not math.isfinite(numeric) or Decimal(str(numeric)) != value:
+        numeric = float(rounded)
+        if not math.isfinite(numeric) or Decimal(str(numeric)) != rounded:
             raise ExtractionError("Результат нельзя точно представить в JSON; правило округления не задано", code="invalid_calculation")
     except (SyntaxError, DecimalException, OverflowError, RecursionError) as error:
         raise ExtractionError("Некорректная арифметическая формула", code="invalid_calculation") from error
     operands = ", ".join(f"{name}={value}" for name, value in values.items())
-    return numeric, f"{target} = {plan.expression}; {operands}; result={value}"
+    derivation = f"{target} = {plan.expression}; {operands}; result={value}"
+    if rounded != value:
+        derivation += f"; rounded_to_kopecks={rounded}"
+    return numeric, derivation
 
 
 _REQUISITE_FORMATS = {
