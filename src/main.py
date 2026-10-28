@@ -232,7 +232,35 @@ def print_llm_usage(usage: LLMUsage) -> None:
     print(f"  Оценка стоимости по usage и заданным тарифам: {cost}")
 
 
-def print_decision_usage(usage: DecisionUsage | None, *, name: str = "Decision model") -> None:
+def estimate_usage_costs(
+    llm_usage: LLMUsage | None, decision_usage: DecisionUsage | None, *,
+    decision_settings=None, include_decision: bool = False,
+) -> dict[str, float | None]:
+    """USD по usage и заданным тарифам; неполные сведения не считаются нулевой ценой."""
+
+    llm_cost = 0.0
+    if llm_usage is not None and llm_usage.requests:
+        llm_cost = (llm_usage.estimated_cost
+                    if llm_usage.requests == llm_usage.responses == llm_usage.usage_reports else None)
+    
+    decision_cost = 0.0
+    if include_decision:
+        decision_cost = None
+        if decision_usage is not None:
+            if not decision_usage.sdk_calls:
+                decision_cost = 0.0
+            elif decision_usage.sdk_calls == decision_usage.responses == decision_usage.usage_reports:
+                input_price = getattr(decision_settings, "input_price_per_million", None)
+                output_price = getattr(decision_settings, "output_price_per_million", None)
+                if input_price is not None and output_price is not None:
+                    decision_cost = (decision_usage.input_tokens * input_price
+                                     + decision_usage.output_tokens * output_price) / 1_000_000
+    total = llm_cost + decision_cost if llm_cost is not None and decision_cost is not None else None
+    return {"llm_usd": llm_cost, "decision_usd": decision_cost, "total_usd": total}
+
+
+def print_decision_usage(usage: DecisionUsage | None, *, name: str = "Decision model",
+                         estimated_cost: float | None = None) -> None:
     if usage is None:
         print(f"{name}: статистика SDK н/д")
     else:
@@ -243,6 +271,8 @@ def print_decision_usage(usage: DecisionUsage | None, *, name: str = "Decision m
                   f"usage получен для {usage.usage_reports}/{usage.responses} ответов")
         else:
             print(f"  Токены {name}: н/д (нет полного usage)")
+    cost = f"${estimated_cost:.6f}" if estimated_cost is not None else "н/д"
+    print(f"  Оценка стоимости {name} по usage и заданным тарифам: {cost}")
     print(f"  Стоимость {name} не включена в оценку стоимости LLM.")
     if name == "CLM":
         print("  Usage CLM считает токены кодировщика на промахах кеша, не полный текст HTTP-запроса.")
@@ -345,9 +375,13 @@ async def main(
         report = calculate_metrics(evaluated, [row.model_dump(mode="json") for row in results],
                                    evaluate_fields=document_mode)
         decision_usage = getattr(client, "usage", None)
+        costs = estimate_usage_costs(extractor.usage if extractor is not None else None,
+                                     decision_usage, decision_settings=decision_settings,
+                                     include_decision=client is not None)
         run.checkpoint(results, errors, report, status=status, failure_kind=failure_kind, usage={
             "llm": asdict(extractor.usage) if extractor is not None else None,
             "decision": asdict(decision_usage) if is_dataclass(decision_usage) else None,
+            "cost_estimate": costs,
             "elapsed_seconds": perf_counter() - run_started,
         })
         return report
@@ -382,6 +416,11 @@ async def main(
                     stopped_error = error
             else:
                 results.append(result)
+                validation = getattr(result, "validation", None)
+                if validation is not None and validation.status == "needs_review":
+                    print(f"[{case.case_id}] Документ сохранён; требуется проверка:", flush=True)
+                    for issue in validation.issues:
+                        print(f"  {issue.path or 'document'}: {issue.stage}/{issue.code}", flush=True)
                 if debug and document_mode:
                     print(f"[{case.case_id}] Итог после проверок:", flush=True)
                     print(result.model_dump_json(indent=2), flush=True)
@@ -417,17 +456,27 @@ async def main(
         raise
     finally:
         if document_mode:
+            costs = estimate_usage_costs(extractor.usage if extractor is not None else None,
+                                         getattr(client, "usage", None), decision_settings=decision_settings,
+                                         include_decision=client is not None)
             if extractor is not None:
                 print_llm_usage(extractor.usage)
             if client is not None:
-                print_decision_usage(getattr(client, "usage", None), name=verifier_name)
+                print_decision_usage(getattr(client, "usage", None), name=verifier_name,
+                                     estimated_cost=costs["decision_usd"])
+            total_cost = f"${costs['total_usd']:.6f}" if costs["total_usd"] is not None else "н/д"
+            print(f"Оценка общей стоимости запуска: {total_cost}")
             print(f"Полное время прогона ({mode}): {perf_counter() - run_started:.2f} с", flush=True)
 
     report = checkpoint("stopped" if stopped_error is not None else "completed",
                         type(stopped_error).__name__ if stopped_error is not None else None)
 
     print(f"Обработано кейсов: {report.total_cases}")
-    print(f"Успешно: {len(results)}; с ошибкой: {len(errors)}")
+    review_count = sum(getattr(getattr(row, "validation", None), "status", None) == "needs_review"
+                       for row in results)
+    print(f"Успешно: {len(results) - review_count}; с ошибкой: {len(errors)}")
+    if review_count:
+        print(f"Требуют проверки: {review_count}")
     if stopped_error is not None:
         print(f"Прогон остановлен. Не обработано: {len(cases) - report.total_cases}")
         print("Частичные метрики: только обработанные кейсы, включая неуспешные.")
