@@ -254,27 +254,35 @@ def estimate_usage_costs(
     llm_usage: LLMUsage | None, decision_usage: DecisionUsage | None, *,
     decision_settings=None, include_decision: bool = False,
 ) -> dict[str, float | None]:
-    """USD по usage и заданным тарифам; неполные сведения не считаются нулевой ценой."""
+    """USD по usage и заданным тарифам; неполные сведения не считаются нулевой ценой.
 
+    Цена считается по полученным ответам. Запрос без ответа (таймаут, сбой сети)
+    мог быть оплачен, поэтому при нём итог — нижняя граница. Ответы 429 не
+    тарифицируются и границу не создают.
+    """
+
+    unanswered = {"llm": 0, "decision": 0}
     llm_cost = 0.0
     if llm_usage is not None and llm_usage.requests:
-        llm_cost = (llm_usage.estimated_cost
-                    if llm_usage.requests == llm_usage.responses == llm_usage.usage_reports else None)
+        unanswered["llm"] = max(0, llm_usage.requests - llm_usage.responses - llm_usage.rate_limit_errors)
+        llm_cost = llm_usage.estimated_cost if llm_usage.responses == llm_usage.usage_reports else None
     
     decision_cost = 0.0
     if include_decision:
         decision_cost = None
         if decision_usage is not None:
+            unanswered["decision"] = max(0, decision_usage.sdk_calls - decision_usage.responses)
             if not decision_usage.sdk_calls:
                 decision_cost = 0.0
-            elif decision_usage.sdk_calls == decision_usage.responses == decision_usage.usage_reports:
+            elif decision_usage.responses == decision_usage.usage_reports:
                 input_price = getattr(decision_settings, "input_price_per_million", None)
                 output_price = getattr(decision_settings, "output_price_per_million", None)
                 if input_price is not None and output_price is not None:
                     decision_cost = (decision_usage.input_tokens * input_price
                                      + decision_usage.output_tokens * output_price) / 1_000_000
     total = llm_cost + decision_cost if llm_cost is not None and decision_cost is not None else None
-    return {"llm_usd": llm_cost, "decision_usd": decision_cost, "total_usd": total}
+    return {"llm_usd": llm_cost, "decision_usd": decision_cost, "total_usd": total,
+            "is_lower_bound": any(unanswered.values()), "unanswered_requests": unanswered}
 
 
 def print_decision_usage(usage: DecisionUsage | None, *, name: str = "Decision model",
@@ -483,6 +491,8 @@ async def main(
                 print_decision_usage(getattr(client, "usage", None), name=verifier_name,
                                      estimated_cost=costs["decision_usd"])
             total_cost = f"${costs['total_usd']:.6f}" if costs["total_usd"] is not None else "н/д"
+            if costs["is_lower_bound"]:
+                total_cost += f" (нижняя граница: запросов без ответа — {sum(costs['unanswered_requests'].values())})"
             print(f"Оценка общей стоимости запуска: {total_cost}")
             print(f"Полное время прогона ({mode}): {perf_counter() - run_started:.2f} с", flush=True)
 

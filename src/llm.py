@@ -582,7 +582,8 @@ class AsyncLLMExtractor:
                 raise LLMResponseError(_validation_feedback(error, schema), code="schema_validation") from None
         finally:
             self.usage.elapsed_seconds += time.perf_counter() - started
-            if not self.usage.usage_reports or self.usage.usage_reports != self.usage.responses:
+            # Запрос без ответа не делает неизвестной цену уже полученных ответов.
+            if self.usage.usage_reports != self.usage.responses:
                 self.usage.estimated_cost = None
 
 
