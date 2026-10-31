@@ -100,7 +100,10 @@ VAT_RATE_RULE = (
 ITEM_DESCRIPTION_RULE = (
     "For item descriptions only, use singular nominative when unambiguous; never infer quantity=1. "
     "Preserve meaning, characteristics, established names, names in quotation marks, plural-only "
-    "nouns (ножницы) and ambiguous forms. Do not singularize subject or change evidence."
+    "nouns (ножницы) and ambiguous forms. Do not singularize subject or change evidence. "
+    "Keep a bare generic category word without a stated kind or count as written ('за услуги' -> "
+    "'услуги', 'за работы' -> 'работы'); with a stated kind or count normalize as usual "
+    "('5 услуг настройки' -> 'услуга настройки')."
 )
 
 ITEM_DESCRIPTION_SEMANTIC_RULE = (
@@ -168,11 +171,23 @@ ITEM_UNIT_PRICE_RULE = (
 )
 
 
+def fold_yo(value):
+    """«ё» и «е» — одна буква при сравнении значений, в том числе внутри позиций."""
+    if isinstance(value, str):
+        return value.replace("ё", "е").replace("Ё", "Е")
+    if isinstance(value, (list, tuple)):
+        return [fold_yo(item) for item in value]
+    if isinstance(value, dict):
+        return {key: fold_yo(item) for key, item in value.items()}
+    return value
+
+
 def equivalent_field_values(document_type, name, left, right):
-    """Только точное равенство или одна явно разрешённая группа вариантов."""
+    """Только равенство (с точностью до ё/е) или одна явно разрешённая группа вариантов."""
+    left, right = fold_yo(left), fold_yo(right)
     if left == right:
         return True
     if not isinstance(left, str) or not isinstance(right, str):
         return False
-    return any(left in group and right in group
+    return any(left in fold_yo(group) and right in fold_yo(group)
                for group in PERMITTED_ALIASES.get((document_type, name), ()))

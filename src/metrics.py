@@ -4,7 +4,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from src.schemas.schemas import DocumentType, Probability
-from src.field_rules import equivalent_field_values
+from src.field_rules import equivalent_field_values, fold_yo
 
 
 type JsonRow = Mapping[str, Any]
@@ -81,7 +81,7 @@ class AcceptanceMetrics(BaseModel):
 class MetricsReport(BaseModel):
     """Итог сравнения предсказаний c правильными результатами."""
 
-    metrics_version: int = 4
+    metrics_version: int = 5
     total_cases: int
     predicted_cases: int
     prediction_coverage: float | None
@@ -109,7 +109,8 @@ def calculate_metrics(
     одновременно создаёт пропуски для правильного шаблона и лишние заполнения
     для ошибочно выбранного шаблона.
 
-    ``value_accuracy`` использует строгое равенство JSON-значений, а
+    ``value_accuracy`` использует строгое равенство JSON-значений (буквы «ё» и «е»
+    считаются одинаковыми, в том числе внутри позиций), а
     ``evidence_id_exact_match`` — равенство множеств идентификаторов сообщений.
     Обе точности считаются только среди true-positive полей. Если таких полей
     нет, значение метрики равно ``None``.
@@ -253,7 +254,7 @@ def field_matches(document_type: str, name: str, expected: JsonRow, actual: Json
         return False
     if allow_aliases:
         return equivalent_field_values(document_type, name, actual["value"], expected.get("value"))
-    return actual["value"] == expected.get("value")
+    return fold_yo(actual["value"]) == fold_yo(expected.get("value"))
 
 
 def _exact_document(expected: JsonRow, actual: JsonRow | None) -> bool:

@@ -11,7 +11,7 @@ from src.extraction import (
     requisite_source_candidates,
 )
 from src.field_rules import (
-    INVOICE_AMOUNT_RULE, INVOICE_SUBJECT_RULE, ITEM_DESCRIPTION_SEMANTIC_RULE, ITEM_QUANTITY_RULE,
+    INVOICE_AMOUNT_RULE, INVOICE_SUBJECT_RULE, ITEM_DESCRIPTION_RULE, ITEM_DESCRIPTION_SEMANTIC_RULE, ITEM_QUANTITY_RULE,
     ITEM_UNIT_PRICE_RULE, ITEM_UNIT_RULE, TRANSFER_ALIAS_RULES, TRANSFER_RECIPIENT_RULE,
     ITEMS_PRESENCE_RULE, ITEMS_SELECTION_RULE, ITEMS_EXAMPLES, RECIPIENT_NAME_RULE, BASIS_NUMBER_RULE,
     VAT_MODE_RULE, VAT_RATE_RULE, QUOTED_PRODUCT_NAME_RULE, BASIS_DATE_RULE, DESTINATION_BANK_RULE,
@@ -382,6 +382,13 @@ def _build_verification_checks(fields: PreparedFields) -> dict[str, str]:
                             "other requested items need not appear in this description. "
                             "Ignore meaning-preserving number/case changes; do not judge quantity, unit or price here."
                         )
+                        # Проверки выше игнорируют число и падеж; форму описания проверяем отдельно.
+                        questions[f"items[{index}].{attribute}::noncanonical"] = (
+                            f"Does {path} violate the item-description form rule in instructions.rules: "
+                            "is it left in plural or an oblique case although its singular nominative form "
+                            "is unambiguous ('стулья' -> 'стул', 'за мониторы' -> 'монитор')? Judge only the "
+                            "grammatical form, not product identity, characteristics, quantity, unit or price."
+                        )
                         continue
 
                     questions[f"items[{index}].{attribute}::value_wrong"] = (
@@ -466,6 +473,8 @@ def build_verification_questions(
         if key.startswith("items["):
             attribute = key.split("::", 1)[0].rsplit(".", 1)[-1]
             item_rules = attribute_rules[attribute]
+            if attribute == "description" and key.endswith("::noncanonical"):
+                item_rules = ITEM_DESCRIPTION_RULE  # правило формы, а не «форма не важна»
             semantic_rule = ""
 
         path = key.split("::", 1)[0]
@@ -576,6 +585,11 @@ def build_verification_questions(
             criteria = {
                 "true": "This description adds or changes characteristics or a quoted product name not supported for the corresponding requested item, beyond the permitted quoted-name normalization.",
                 "false": "All stated characteristics and quoted names are supported, or none are stated. Removing external labels and outer quotes under the shared rule is not a name change; inner text, embedded quotes and labels inside the name must remain. Product identity, list completeness, grammatical normalization and unknown quantity/unit/price do not trigger this check.",
+            }
+        if path.endswith("].description") and key.endswith("::noncanonical"):
+            criteria = {
+                "true": "The description is not in singular nominative although that form is unambiguous for this item.",
+                "false": "The description is in singular nominative, or it is a quoted or established name, a plural-only noun (ножницы) or an ambiguous form that stays as written.",
             }
         if key.endswith("::superseded") and current["status"] == "fillable":
             criteria = {

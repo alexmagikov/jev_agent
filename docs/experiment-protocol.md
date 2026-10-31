@@ -128,7 +128,8 @@ uv run --locked python -m scripts.run_experiment --live \
 ### Метрики
 
 - Главная: доля полностью правильных документов (`exact_document_accuracy`):
-  совпадают тип документа, набор полей, статусы и значения.
+  совпадают тип документа, набор полей, статусы и значения. При сравнении строк
+  «ё» и «е» считаются одной буквой (`metrics_version=5`).
 - Вторичные: `value_recall`, `value_precision`, `field_accuracy`, `status_accuracy`,
   alias-aware `value_recall`; принятие результатов (`automatic_acceptance_rate`,
   `accepted_error_rate`, `needs_review_rate`); стоимость и время на кейс.
