@@ -47,7 +47,7 @@ class VerificationQuestions(RootModel[dict[str, NoulQuestion]]):
     pass
 
 
-_RULES = (
+_COMMON_RULES = (
     """
     Your task is to verify whether the document fields are correctly filled
     according to the selected document template and the user's dialogue.
@@ -70,11 +70,16 @@ _RULES = (
     and that the formula matches the meaning of the message. The calculated result
     does not have to appear verbatim in the text.
     Return the probability that the specified error is present."""
+)
+
+# Нормализация описаний позиций нужна только счёту; перевод получает общие правила.
+_ITEM_DESCRIPTION_NOTE = (
     " Item descriptions are normalized to singular nominative when unambiguous ('стулья' -> 'стул'). "
     "This preserves product identity, including when the source is plural; it is not an unsupported "
     "value or a different product. Preserve quoted names, plural-only nouns and ambiguous forms. "
     "Do not infer quantity=1 or change units/evidence."
 )
+_RULES = _COMMON_RULES + _ITEM_DESCRIPTION_NOTE  # правила проверки счёта
 
 
 _ITEMS_RULES = " ".join((
@@ -173,7 +178,8 @@ def _build_verification_checks(fields: PreparedFields) -> dict[str, str]:
             f"Does the current status in instructions.field.status for {path} contradict the latest "
             "applicable user data? Judge status only, not value correctness. missing means no current "
             "applicable data; invalid means supplied but unusable data; ambiguous means unresolved "
-            "alternatives between usable values; fillable means supported usable data, including "
+            "alternatives between usable values or unclear meaning or ownership of supplied data; "
+            "fillable means supported usable data, including "
             "a justified calculation. Explicit malformed data is not missing. Respect ownership, "
             "withdrawals, corrections and the supplied field-specific rules."
         )
@@ -617,7 +623,7 @@ async def verify_fields(
         state=VerificationState(
             messages=messages,
             document_type=document_type,
-            rules=_RULES,
+            rules=_RULES if document_type == "invoice_draft" else _COMMON_RULES,
         ),
         questions=questions,
         response_model=VerificationResponse,

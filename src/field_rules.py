@@ -6,7 +6,8 @@
 
 
 PERMITTED_ALIASES = {
-    ("transfer_draft", "destination_bank"): (("Сбер", "Сбера", "Сбербанк"),),
+    # Только формы именительного падежа: банк приводится к нему (DESTINATION_BANK_RULE).
+    ("transfer_draft", "destination_bank"): (("Сбер", "Сбербанк"),),
     ("transfer_draft", "source_account_kind"): (("расчётный счёт", "расчётный"),),
 }
 
@@ -52,7 +53,7 @@ ITEMS_SELECTION_RULE = (
 
 ITEMS_EXAMPLES = (
     "Examples only, not actual input. 'Выставь счёт за консультацию': description=консультация, "
-    "other attributes null. 'Счёт на 5000 рублей': amount_rub=5000, items missing. 'Счёт за "
+    "subject=консультация, other attributes null. 'Счёт на 5000 рублей': amount_rub=5000, items missing. 'Счёт за "
     "консультационные услуги на 5000 рублей': description=консультационная услуга, "
     "subject=консультационные услуги, amount_rub=5000; other item attributes null. 'Абрикосы: 100 "
     "рублей за 5 штук': quantity=5, unit=штук, unit_price_rub=100/5. 'Стулья: по 3 штуки для каждого из 4 "
@@ -63,8 +64,8 @@ ITEMS_EXAMPLES = (
 )
 
 RECIPIENT_NAME_RULE = (
-    "Use nominative case for a person name only when unambiguous. Preserve "
-    "company names, quoted text and name components; invent none."
+    "Use nominative case for a person name only when unambiguous ('счёт ИП Петрову' -> 'ИП Петров'); "
+    "otherwise keep the user's form. Preserve company names, quoted text and name components; invent none."
 )
 
 BASIS_NUMBER_RULE = (
@@ -85,7 +86,8 @@ BASIS_DATE_RULE = (
 
 VAT_MODE_RULE = (
     "Distinguish no_vat from a stated 0% rate. 'Без НДС' means vat_mode='no_vat' and "
-    "vat_rate_percent is missing; 'НДС 0%' means vat_mode='rate' and vat_rate_percent=0. A rate "
+    "vat_rate_percent is missing; 'НДС 0%' means vat_mode='rate' and vat_rate_percent=0. "
+    "'С НДС' without a percentage means vat_mode='rate' and vat_rate_percent is missing. A rate "
     "alone does not authorize adding VAT to the total."
 )
 
@@ -141,7 +143,8 @@ INVOICE_AMOUNT_RULE = (
 INVOICE_SUBJECT_RULE = (
     "Subject and items are not mutually exclusive: one billed category supports both without "
     "quantity, price or a separate purpose sentence. For different goods require a stated common "
-    "purpose; never concatenate names."
+    "purpose; never concatenate names. Write subject in nominative case keeping the user's number: "
+    "'за консультацию' -> 'консультация', 'за мониторы' -> 'мониторы'; quoted names stay as written."
 )
 
 ITEM_UNIT_RULE = (

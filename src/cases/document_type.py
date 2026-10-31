@@ -111,6 +111,14 @@ class DocumentTypeQuestion(BaseModel):
     )
 
 
+# Без заглушки: LLM при активном запросе возвращает none_reason=null.
+NO_REQUEST_CRITERION = (
+    "No preparation request was established: the user asks for information, "
+    "instructions, a feature location, or an existing document, or merely "
+    "discusses a past operation."
+)
+
+
 class NoneReasonQuestion(BaseModel):
     type: Literal["choice"] = "choice"
     instructions: str = (
@@ -129,12 +137,8 @@ class NoneReasonQuestion(BaseModel):
         "as a placeholder: the code ignores this answer in that case."
     )
     criteria: NoneReasonOptions[str] = NoneReasonOptions[str](
-        no_request=(
-            "No preparation request was established: the user asks for information, "
-            "instructions, a feature location, or an existing document, or merely "
-            "discusses a past operation. Also the ignored placeholder when a supported "
-            "request is active."
-        ),
+        # Jev отвечает на оба вопроса всегда, поэтому ему нужна предсказуемая заглушка.
+        no_request=NO_REQUEST_CRITERION + " Also the ignored placeholder when a supported request is active.",
         other_document=(
             "The current request is for a different document or operation, such as "
             "счёт-фактура, УПД, акт, or a transfer to another person's card, "

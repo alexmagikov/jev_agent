@@ -274,7 +274,8 @@ def _calculate(
             if isinstance(node, ast.Name) and node.id in values:
                 used.add(node.id)
                 return values[node.id]
-            if isinstance(node, ast.Constant) and type(node.value) is int and node.value in (0, 1, 100):
+            # Константы — только для процентов и перевода единиц (кг↔г, ч↔мин).
+            if isinstance(node, ast.Constant) and type(node.value) is int and node.value in (0, 1, 60, 100, 1000):
                 return Decimal(node.value)
             if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
                 value = evaluate(node.operand)
