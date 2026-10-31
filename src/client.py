@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from time import perf_counter
 
 from pydantic import BaseModel, ValidationError
-from typesafe_sdk import AsyncTypeSafeClient, RetryPolicy, TypeSafeError, TypeSafeRateLimitError
+from typesafe_sdk import AsyncTypeSafeClient, RetryPolicy, TypeSafeAPIError, TypeSafeError, TypeSafeRateLimitError
 
 from src.settings import DecisionModelSettings, CLMSettings, JeffSettings, LayaSettings
 
@@ -20,6 +20,8 @@ class DecisionUsage:
     # Это вызовы SDK: его внутренние HTTP-повторы здесь не наблюдаются.
     sdk_calls: int = 0
     responses: int = 0
+    # Ответы сервера с HTTP-ошибкой (включая 429): вызов отклонён и не тарифицируется.
+    error_responses: int = 0
     usage_reports: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
@@ -141,8 +143,11 @@ class DecisionModelClient:
                     self.usage.output_tokens += counts[1]
                 return response_model.model_validate(response.model_dump(mode="json"))
         except TypeSafeRateLimitError:
+            self.usage.error_responses += 1
             raise DecisionModelRateLimitError(f"{self.name}: HTTP 429, лимит API не снят; повторите запуск позже") from None
         except (TypeSafeError, ValidationError) as error:
+            if isinstance(error, TypeSafeAPIError):
+                self.usage.error_responses += 1
             raise self.safe_error(error) from None
         finally:
             self.usage.elapsed_seconds += perf_counter() - started

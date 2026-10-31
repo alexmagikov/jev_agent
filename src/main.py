@@ -257,21 +257,23 @@ def estimate_usage_costs(
     """USD по usage и заданным тарифам; неполные сведения не считаются нулевой ценой.
 
     Цена считается по полученным ответам. Запрос без ответа (таймаут, сбой сети)
-    мог быть оплачен, поэтому при нём итог — нижняя граница. Ответы 429 не
-    тарифицируются и границу не создают.
+    мог быть оплачен, поэтому при нём итог — нижняя граница. HTTP-ответ с ошибкой
+    (429, 401, 5xx и т. п.) — отказ сервера: он не тарифицируется и границу не создаёт.
     """
 
     unanswered = {"llm": 0, "decision": 0}
     llm_cost = 0.0
     if llm_usage is not None and llm_usage.requests:
-        unanswered["llm"] = max(0, llm_usage.requests - llm_usage.responses - llm_usage.rate_limit_errors)
+        unanswered["llm"] = max(0, llm_usage.requests - llm_usage.responses
+                                - llm_usage.rate_limit_errors - llm_usage.error_responses)
         llm_cost = llm_usage.estimated_cost if llm_usage.responses == llm_usage.usage_reports else None
     
     decision_cost = 0.0
     if include_decision:
         decision_cost = None
         if decision_usage is not None:
-            unanswered["decision"] = max(0, decision_usage.sdk_calls - decision_usage.responses)
+            unanswered["decision"] = max(0, decision_usage.sdk_calls - decision_usage.responses
+                                         - decision_usage.error_responses)
             if not decision_usage.sdk_calls:
                 decision_cost = 0.0
             elif decision_usage.responses == decision_usage.usage_reports:
@@ -492,7 +494,9 @@ async def main(
                                      estimated_cost=costs["decision_usd"])
             total_cost = f"${costs['total_usd']:.6f}" if costs["total_usd"] is not None else "н/д"
             if costs["is_lower_bound"]:
-                total_cost += f" (нижняя граница: запросов без ответа — {sum(costs['unanswered_requests'].values())})"
+                unanswered = sum(costs["unanswered_requests"].values())
+                total_cost += (f" (нижняя граница: запросов без ответа — {unanswered})" if costs["total_usd"] is not None
+                               else f" (запросов без ответа — {unanswered})")
             print(f"Оценка общей стоимости запуска: {total_cost}")
             print(f"Полное время прогона ({mode}): {perf_counter() - run_started:.2f} с", flush=True)
 

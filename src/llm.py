@@ -62,6 +62,14 @@ class LLMResponseError(LLMError):
         self.code = code if code in allowed else "invalid_response"
 
 
+class LLMUnavailableError(LLMError):
+    """API не ответил после всех повторов: сеть, таймаут или временная ошибка 408/5xx.
+
+    Отдельный тип позволяет пакетному запуску отличить недоступность сервиса
+    от отказа в запросе и остановиться, если сбой повторяется кейс за кейсом.
+    """
+
+
 class LLMRateLimitError(LLMError):
     """API продолжает отвечать HTTP 429: превышен лимит запросов или квота.
 
@@ -136,6 +144,8 @@ class LLMUsage:
     requests: int = 0
     retries: int = 0
     rate_limit_errors: int = 0
+    # HTTP-ответы с ошибкой, кроме 429: сервер отказал, запрос не тарифицируется.
+    error_responses: int = 0
     responses: int = 0
     usage_reports: int = 0
     input_tokens: int = 0
@@ -645,8 +655,8 @@ class AsyncLLMExtractor:
             else:
                 used_retries = network_retries if separate_rate_limit_budget else attempts - 1
                 if used_retries >= self.settings.max_retries:
-                    raise LLMError(f"LLM API недоступен после {attempts} попыток: {failure}",
-                                   status_code=failure.status_code) from None
+                    raise LLMUnavailableError(f"LLM API недоступен после {attempts} попыток: {failure}",
+                                              status_code=failure.status_code) from None
                 delay = _retry_delay(network_retries, failure.retry_after)
                 network_retries += 1
             await asyncio.sleep(delay)
@@ -671,11 +681,14 @@ class AsyncLLMExtractor:
             follow_redirects=False,
         ) as response:
             if response.status_code in RETRY_STATUS:
+                if response.status_code != 429:  # 429 учитывается в rate_limit_errors
+                    self.usage.error_responses += 1
                 raise _TemporaryFailure(
                     f"Ошибка HTTP {response.status_code}", response.headers.get("Retry-After"),
                     status_code=response.status_code,
                 )
             if response.status_code != 200:
+                self.usage.error_responses += 1
                 if response.status_code == 400 and payload.get("response_format", {}).get("type") == "json_schema":
                     raise LLMError(
                         "Ошибка HTTP 400 при обращении к LLM; проверь поддержку json_schema сервером и схему. "
