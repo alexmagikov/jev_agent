@@ -36,49 +36,7 @@ Python проверяет структуру и выполняет расчёт�
 
 ## Как это работает
 
-```mermaid
-flowchart TD
-    subgraph FULL["Режим full"]
-        direction TB
-        A1([Диалог]) --> J1["Jev: тип документа"]
-        J1 -->|none| N1([Причина, полей нет])
-        J1 -->|счёт или перевод| L1["LLM: извлечение / исправление полей"]
-        L1 --> P1{"Python: проверки<br/>источников, форматов, расчётов"}
-        P1 -->|ошибка| R1["Замечания и пути исправления"]
-        P1 -->|ок| V1{"Jev: проверка смысла"}
-        V1 -->|замечания| R1
-        R1 -->|есть попытки| L1
-        R1 -->|попытки исчерпаны| W1([Лучший кандидат<br/>+ needs_review])
-        V1 -->|принято| F1([Итоговый JSON])
-    end
-
-    subgraph LLMONLY["Режим llm-only"]
-        direction TB
-        A2([Диалог]) --> L2a["LLM: тип документа"]
-        L2a -->|none| N2([Причина, полей нет])
-        L2a -->|счёт или перевод| L2b["LLM: извлечение / исправление полей"]
-        L2b --> P2{"Python: проверки"}
-        P2 -->|ошибка, есть попытки| L2b
-        P2 -->|попытки исчерпаны| W2([Лучший кандидат<br/>+ needs_review])
-        P2 -->|ок| F2([Итоговый JSON])
-    end
-
-    subgraph CLS["Режим classification"]
-        direction TB
-        A3([Диалог]) --> J3["Jev: тип документа"] --> F3([Тип и уверенность])
-    end
-
-    classDef llm fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
-    classDef py fill:#dcfce7,stroke:#16a34a,color:#14532d
-    classDef jev fill:#ffedd5,stroke:#ea580c,color:#7c2d12
-    classDef out fill:#f3f4f6,stroke:#6b7280,color:#111827
-    classDef warn fill:#fef9c3,stroke:#ca8a04,color:#713f12
-    class L1,L2a,L2b llm
-    class P1,P2 py
-    class J1,V1,J3 jev
-    class A1,A2,A3,N1,N2,F1,F2,F3,R1 out
-    class W1,W2 warn
-```
+![Архитектура: извлекающая LLM, Python-проверки и модель решений Jev](assets/architecture.svg)
 
 | Участник | Ответственность |
 | --- | --- |
