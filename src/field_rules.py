@@ -54,7 +54,7 @@ ITEMS_SELECTION_RULE = (
 ITEMS_EXAMPLES = (
     "Examples only, not actual input. 'Выставь счёт за консультацию': description=консультация, "
     "subject=консультация, other attributes null. 'Счёт на 5000 рублей': amount_rub=5000, items missing. 'Счёт за "
-    "консультационные услуги на 5000 рублей': description=консультационная услуга, "
+    "консультационные услуги на 5000 рублей': description=консультационные услуги, "
     "subject=консультационные услуги, amount_rub=5000; other item attributes null. 'Абрикосы: 100 "
     "рублей за 5 штук': quantity=5, unit=штук, unit_price_rub=100/5. 'Стулья: по 3 штуки для каждого из 4 "
     "кабинетов, всего 12000 рублей': quantity=3*4, unit_price_rub=12000/(3*4). 'Яблоки и груши: всего 5 "
@@ -101,9 +101,10 @@ ITEM_DESCRIPTION_RULE = (
     "For item descriptions only, use singular nominative when unambiguous; never infer quantity=1. "
     "Preserve meaning, characteristics, established names, names in quotation marks, plural-only "
     "nouns (ножницы) and ambiguous forms. Do not singularize subject or change evidence. "
-    "Keep a bare generic category word without a stated kind or count as written ('за услуги' -> "
-    "'услуги', 'за работы' -> 'работы'); with a stated kind or count normalize as usual "
-    "('5 услуг настройки' -> 'услуга настройки')."
+    "Goods use the singular ('стулья' -> 'стул'). Services or works named in plural without a "
+    "count keep the user's form ('за услуги' -> 'услуги', 'за консультационные услуги' -> "
+    "'консультационные услуги', 'за работы по монтажу' -> 'работы по монтажу'); with a count "
+    "use the singular ('5 услуг настройки' -> 'услуга настройки')."
 )
 
 ITEM_DESCRIPTION_SEMANTIC_RULE = (

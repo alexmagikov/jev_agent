@@ -386,8 +386,9 @@ def _build_verification_checks(fields: PreparedFields) -> dict[str, str]:
                         questions[f"items[{index}].{attribute}::noncanonical"] = (
                             f"Does {path} violate the item-description form rule in instructions.rules: "
                             "is it left in plural or an oblique case although its singular nominative form "
-                            "is unambiguous ('стулья' -> 'стул', 'за мониторы' -> 'монитор')? Judge only the "
-                            "grammatical form, not product identity, characteristics, quantity, unit or price."
+                            "is unambiguous ('стулья' -> 'стул', 'за мониторы' -> 'монитор')? Plural services "
+                            "or works without a count stay as written. Judge only the grammatical form, not "
+                            "product identity, characteristics, quantity, unit or price."
                         )
                         continue
 
@@ -589,7 +590,7 @@ def build_verification_questions(
         if path.endswith("].description") and key.endswith("::noncanonical"):
             criteria = {
                 "true": "The description is not in singular nominative although that form is unambiguous for this item.",
-                "false": "The description is in singular nominative, or it is a quoted or established name, a plural-only noun (ножницы) or an ambiguous form that stays as written.",
+                "false": "The description is in singular nominative, or it is a quoted or established name, a plural-only noun (ножницы), plural services or works without a count, or an ambiguous form that stays as written.",
             }
         if key.endswith("::superseded") and current["status"] == "fillable":
             criteria = {
