@@ -1,0 +1,137 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1780" height="1070" viewBox="0 0 1780 1070" font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif">
+  <title>Архитектура: извлекающая LLM, Python-проверки и модель решений Jev</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+      <path d="M0,1 L9,5 L0,9" fill="none" stroke="#64748b" stroke-width="1.6"/>
+    </marker>
+    <g id="component">
+      <rect x="0" y="0" width="22" height="30" rx="2" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+      <rect x="-6" y="6" width="12" height="6" rx="1" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+      <rect x="-6" y="17" width="12" height="6" rx="1" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+    </g>
+  </defs>
+
+  <rect x="0" y="0" width="1780" height="1070" rx="14" fill="#ffffff"/>
+
+  <!-- Обратные связи сверху -->
+  <g fill="none" stroke="#64748b" stroke-width="1.6">
+    <path d="M1640 230 V40 H130 V226" marker-end="url(#arrow)"/>
+    <path d="M884 150 V104 H214 V226" marker-end="url(#arrow)"/>
+  </g>
+  <g font-size="17" fill="#475569" text-anchor="middle">
+    <text x="885" y="28">Смысловые замечания Jev → ремонт полей (repair_paths)</text>
+    <text x="549" y="92">Ошибки Python → ремонт полей</text>
+  </g>
+
+  <!-- Извлекающая LLM -->
+  <rect x="14" y="230" width="340" height="360" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5"/>
+  <use href="#component" x="306" y="254"/>
+  <text x="42" y="276" font-size="26" font-weight="700" fill="#0f172a">Извлекающая LLM</text>
+  <text x="42" y="314" font-size="16" fill="#64748b">Qwen 3.8 27B · OpenAI API</text>
+  <g font-size="17" fill="#0f172a">
+    <text x="42" y="358">Тип документа (llm-only)</text>
+    <text x="42" y="390">Значения, цитаты, формулы</text>
+    <text x="42" y="422">Ремонт по repair_paths</text>
+    <text x="42" y="454">Выбор фрагментов цитат</text>
+  </g>
+  <text x="42" y="560" font-size="14" fill="#64748b">src/llm.py · AsyncLLMExtractor</text>
+
+  <!-- Модель решений -->
+  <rect x="1426" y="230" width="340" height="360" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5"/>
+  <use href="#component" x="1718" y="254"/>
+  <text x="1454" y="276" font-size="26" font-weight="700" fill="#0f172a">Модель решений</text>
+  <text x="1454" y="314" font-size="16" fill="#64748b">Jev · TypeSafe API</text>
+  <g font-size="17" fill="#0f172a">
+    <text x="1454" y="358">choice: тип документа</text>
+    <text x="1454" y="390">noul: проверки полей</text>
+    <text x="1454" y="422">P(ошибка) ≥ 0,8 → замечание</text>
+    <text x="1454" y="454">Классификатор в режиме full</text>
+  </g>
+  <text x="1454" y="560" font-size="14" fill="#64748b">src/client.py · src/verification.py</text>
+
+  <!-- Пайплайн -->
+  <rect x="480" y="150" width="820" height="562" rx="14" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+  <use href="#component" x="1250" y="174"/>
+  <text x="512" y="198" font-size="30" font-weight="700" fill="#0f172a">Пайплайн документа</text>
+  <text x="512" y="228" font-size="16" fill="#64748b">src/pipeline.py · process_document</text>
+
+  <rect x="512" y="252" width="756" height="304" rx="10" fill="#eef4fc" stroke="#3b82f6" stroke-width="1.8"/>
+  <use href="#component" x="1222" y="270"/>
+  <text x="540" y="294" font-size="26" font-weight="700" fill="#1d4ed8">Python-проверки</text>
+  <g font-size="17">
+    <text x="540" y="336" font-weight="700" fill="#0f172a">prepare_fields</text>
+    <text x="1240" y="336" text-anchor="end" fill="#475569">источники и дословные цитаты</text>
+    <text x="540" y="370" font-weight="700" fill="#0f172a">Форматы реквизитов</text>
+    <text x="1240" y="370" text-anchor="end" fill="#475569">ИНН · БИК · счёт · email</text>
+    <text x="540" y="404" font-weight="700" fill="#0f172a">Арифметика формул</text>
+    <text x="1240" y="404" text-anchor="end" fill="#475569">AST + Decimal, до копеек</text>
+    <text x="540" y="438" font-weight="700" fill="#0f172a">prepare_partial_fields</text>
+    <text x="1240" y="438" text-anchor="end" fill="#475569">частичный результат</text>
+  </g>
+  <line x1="540" y1="458" x2="1240" y2="458" stroke="#cbd5e1" stroke-width="1.2"/>
+  <g font-size="16" fill="#0f172a">
+    <text x="540" y="488">plan_repair · merge_repair · repair_roots — область ремонта</text>
+    <text x="540" y="516">Защита проверенных полей · не более двух попыток извлечения</text>
+  </g>
+  <text x="540" y="542" font-size="14" fill="#64748b">src/extraction.py · src/repairs.py</text>
+
+  <rect x="512" y="580" width="756" height="104" rx="8" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="540" y="616" font-size="19" font-weight="700" fill="#0f172a">Выбор результата</text>
+  <text x="540" y="648" font-size="16" fill="#475569">Лучший кандидат: прошёл Python → меньше непроверенных полей → более поздний</text>
+  <text x="540" y="672" font-size="14" fill="#64748b">validation.status: passed / needs_review</text>
+
+  <!-- Связи LLM и модели решений с пайплайном -->
+  <g fill="none" stroke="#64748b" stroke-width="1.6">
+    <path d="M512 340 H358" marker-end="url(#arrow)"/>
+    <path d="M354 470 H508" marker-end="url(#arrow)"/>
+    <path d="M1268 340 H1422" marker-end="url(#arrow)"/>
+    <path d="M1426 470 H1272" marker-end="url(#arrow)"/>
+  </g>
+  <g font-size="16" fill="#475569" text-anchor="middle">
+    <text x="433" y="330">запрос</text>
+    <text x="433" y="460">кандидат</text>
+    <text x="1347" y="330">вопросы</text>
+    <text x="1347" y="460">вероятности</text>
+  </g>
+
+  <!-- Нижний ряд -->
+  <g fill="none" stroke="#64748b" stroke-width="1.6">
+    <path d="M284 800 V756 H560 V716" marker-end="url(#arrow)"/>
+    <path d="M884 712 V796" marker-end="url(#arrow)"/>
+    <path d="M1208 712 V756 H1496 V796" marker-end="url(#arrow)"/>
+  </g>
+  <g font-size="16" fill="#475569">
+    <text x="422" y="744" text-anchor="middle">диалог и шаблон</text>
+    <text x="896" y="764">черновик документа</text>
+    <text x="1352" y="744" text-anchor="middle">предсказания и метрики</text>
+  </g>
+
+  <rect x="14" y="800" width="540" height="200" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5"/>
+  <use href="#component" x="506" y="824"/>
+  <text x="42" y="846" font-size="26" font-weight="700" fill="#0f172a">Данные</text>
+  <g font-size="17" fill="#0f172a">
+    <text x="42" y="890">cases*.jsonl — диалоги и split</text>
+    <text x="42" y="922">labels*.jsonl — эталонная разметка</text>
+    <text x="42" y="954">form_templates.json — шаблоны полей</text>
+  </g>
+
+  <rect x="620" y="800" width="540" height="200" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5"/>
+  <use href="#component" x="1112" y="824"/>
+  <text x="648" y="846" font-size="26" font-weight="700" fill="#0f172a">Черновик документа</text>
+  <g font-size="17" fill="#0f172a">
+    <text x="648" y="890">status · value · evidence · derivation</text>
+    <text x="648" y="922">validation: issues · unverified_fields</text>
+    <text x="648" y="954">invoice_draft · transfer_draft · none</text>
+  </g>
+
+  <rect x="1226" y="800" width="540" height="200" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5"/>
+  <use href="#component" x="1718" y="824"/>
+  <text x="1254" y="846" font-size="26" font-weight="700" fill="#0f172a">Оценка и эксперимент</text>
+  <g font-size="17" fill="#0f172a">
+    <text x="1254" y="890">metrics.py — точные документы, value_recall</text>
+    <text x="1254" y="922">run_experiment.py — раунды, лимиты</text>
+    <text x="1254" y="954">run_artifacts.py — хеши, стоимость</text>
+  </g>
+
+  <text x="890" y="1046" font-size="16" fill="#64748b" text-anchor="middle">Режимы: full — LLM + Python + Jev · llm-only — LLM + Python · classification — только Jev</text>
+</svg>
