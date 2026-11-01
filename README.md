@@ -36,7 +36,11 @@ Python проверяет структуру и выполняет расчёт�
 
 ## Как это работает
 
-![Архитектура: извлекающая LLM, Python-проверки и модель решений Jev](assets/architecture.svg)
+![Режим full: классификация Jev, извлечение LLM, Python-проверки, смысловая проверка Jev и ремонт](assets/mode-full.svg)
+
+![Режим llm-only: классификация и извлечение LLM, Python-проверки и ремонт](assets/mode-llm-only.svg)
+
+![Режим classification: только выбор типа документа моделью решений](assets/mode-classification.svg)
 
 | Участник | Ответственность |
 | --- | --- |
