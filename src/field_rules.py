@@ -183,12 +183,24 @@ def fold_yo(value):
     return value
 
 
+# Реквизиты и идентификаторы копируются буквально: «ё» в них — другой символ.
+LITERAL_FIELDS = frozenset({
+    "recipient_inn", "recipient_email", "recipient_account", "recipient_bik",
+    "basis_number", "basis_date", "destination_card_masked",
+})
+
+
+def comparable_value(name, value):
+    """Значение для сравнения: ё/е складываются только в текстовых полях."""
+    return value if name in LITERAL_FIELDS else fold_yo(value)
+
+
 def equivalent_field_values(document_type, name, left, right):
-    """Только равенство (с точностью до ё/е) или одна явно разрешённая группа вариантов."""
-    left, right = fold_yo(left), fold_yo(right)
+    """Только равенство (с точностью до ё/е в текстовых полях) или одна явно разрешённая группа вариантов."""
+    left, right = comparable_value(name, left), comparable_value(name, right)
     if left == right:
         return True
     if not isinstance(left, str) or not isinstance(right, str):
         return False
-    return any(left in fold_yo(group) and right in fold_yo(group)
+    return any(left in comparable_value(name, group) and right in comparable_value(name, group)
                for group in PERMITTED_ALIASES.get((document_type, name), ()))

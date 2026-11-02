@@ -108,7 +108,8 @@ class LLMSettings(BaseSettings):
         default=None, min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$",
         validation_alias="LLM_OPENCODE_SESSION",
     )
-    timeout_seconds: float = Field(default=60, gt=0, le=300, validation_alias="LLM_TIMEOUT_SECONDS")
+    # До 10 минут: рассуждающие модели иногда генерируют тысячи токенов на один ответ.
+    timeout_seconds: float = Field(default=60, gt=0, le=600, validation_alias="LLM_TIMEOUT_SECONDS")
     max_output_tokens: int = Field(default=4096, ge=256, le=16384, validation_alias="LLM_MAX_OUTPUT_TOKENS")
     json_mode: bool = Field(default=True, validation_alias="LLM_JSON_MODE")
     response_format: Literal["text", "json_object", "json_schema"] | None = Field(

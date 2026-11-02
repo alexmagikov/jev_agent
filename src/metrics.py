@@ -4,7 +4,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from src.schemas.schemas import DocumentType, Probability
-from src.field_rules import equivalent_field_values, fold_yo
+from src.field_rules import comparable_value, equivalent_field_values
 
 
 type JsonRow = Mapping[str, Any]
@@ -81,7 +81,7 @@ class AcceptanceMetrics(BaseModel):
 class MetricsReport(BaseModel):
     """Итог сравнения предсказаний c правильными результатами."""
 
-    metrics_version: int = 5
+    metrics_version: int = 6
     total_cases: int
     predicted_cases: int
     prediction_coverage: float | None
@@ -166,7 +166,7 @@ def calculate_metrics(
     if not evaluate_fields:
         label_fields, predicted_fields = {}, {}
     predicted_types = {case_id: row["document_type"] for case_id, row in predictions_by_id.items()}
-    document_correctness = ({case_id: _exact_document(label, predictions_by_id.get(case_id))
+    document_correctness = ({case_id: exact_document(label, predictions_by_id.get(case_id))
                              for case_id, label in labels_by_id.items()} if evaluate_fields else {})
     exact_documents = sum(document_correctness.values()) if evaluate_fields else None
 
@@ -254,10 +254,10 @@ def field_matches(document_type: str, name: str, expected: JsonRow, actual: Json
         return False
     if allow_aliases:
         return equivalent_field_values(document_type, name, actual["value"], expected.get("value"))
-    return fold_yo(actual["value"]) == fold_yo(expected.get("value"))
+    return comparable_value(name, actual["value"]) == comparable_value(name, expected.get("value"))
 
 
-def _exact_document(expected: JsonRow, actual: JsonRow | None) -> bool:
+def exact_document(expected: JsonRow, actual: JsonRow | None) -> bool:
     if actual is None or actual["document_type"] != expected["document_type"]:
         return False
     target, predicted = expected["fields"], actual.get("fields", {})
