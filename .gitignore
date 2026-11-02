@@ -223,5 +223,8 @@ notebooks/
 .scratch/
 
 /outputs/
+/experiments/
 
-/docs/
+/docs/*
+!/docs/document-output-contract.md
+!/docs/experiment-protocol.md

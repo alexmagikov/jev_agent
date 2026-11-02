@@ -14,7 +14,10 @@ from uuid import uuid4
 
 from typesafe_sdk import AsyncTypeSafeClient
 
-from scripts.audit_jev import AuditDecisionModel, audit_cases, build_report, build_cost_comparison, service_stop
+from scripts.audit_jev import (
+    MAX_CONSECUTIVE_OUTAGES, AuditDecisionModel, api_failure, audit_cases, build_report, build_cost_comparison,
+    service_stop, service_unavailable,
+)
 from src.client import decision_sdk_options
 from src.main import DEFAULT_INPUT_PATH, DEFAULT_LABELS_PATH, load_cases, load_labels, estimate_usage_costs
 from src.metrics import calculate_metrics
@@ -53,14 +56,18 @@ def _json(path, value):
 def prepare_plan(args):
     if min(args.rounds, args.limit, args.max_llm_calls, args.max_verifier_calls) < 1 or not 0 <= args.api_retries <= 5:
         raise ValueError("Неверные лимиты эксперимента")
+    
     cases = load_cases(args.input, args.split)
     if args.case_ids:
         if set(args.case_ids) - {case.case_id for case in cases}:
             raise ValueError("Выбранные case_id отсутствуют в указанном split")
+        
         cases = [case for case in cases if case.case_id in set(args.case_ids)]
+    
     cases = cases[:args.limit]
     if not cases:
         raise ValueError("В выбранной выборке нет кейсов")
+    
     labels = load_labels(args.labels, {case.case_id for case in cases})
     llm = LLMSettings().model_copy(update={"max_retries": args.api_retries, "rate_limit_retries": args.api_retries})
     decision = DecisionModelSettings().model_copy(update={"max_retries": 0})
@@ -69,10 +76,12 @@ def prepare_plan(args):
         ROOT / "scripts/audit_jev.py", Path(__file__).resolve(), ROOT / "data/form_templates.json",
         ROOT / "pyproject.toml", ROOT / "uv.lock",
     ]
+
     for name in ("document-output-contract.md", "experiment-protocol.md"):
         contract = ROOT / "docs" / name
         if contract.exists():
             sources.append(contract)
+    
     fingerprints = {path.resolve(): hashlib.sha256(path.read_bytes()).hexdigest()
                     for path in [*sources, args.input, args.labels]}
     config = {
@@ -137,7 +146,9 @@ def summarize(plan, phases, budgets, *, status, stop_reason=None):
     values = list(costs.values())
     costs["actual_total_usd"] = sum(values) if all(value is not None for value in values) else None
     costs["known_subtotal_usd"] = sum(phase.get("known_cost_subtotal_usd", 0) for phase in phases)
-    costs["note"] = "Actual executed requests only; the shared paired baseline is counted once. USD estimates from usage/rates."
+    costs["is_lower_bound"] = any(phase.get("cost_is_lower_bound", False) for phase in phases)
+    costs["note"] = ("Actual executed requests only; the shared paired baseline is counted once. USD estimates from usage/rates. "
+                     "is_lower_bound: some requests got no response and may also have been billed.")
     return {"status": status, "stop_reason": stop_reason, "calls": {name: budget.used for name, budget in budgets.items()},
             "phases": [{key: value for key, value in phase.items() if not key.startswith("_")} for phase in phases],
             "mode_comparison": modes, "paired_audit": paired, "costs": costs,
@@ -153,6 +164,7 @@ async def run_mode(plan, phase, directory, budgets, api_retries, *, on_start=Non
     run = RunArtifacts(directory / "predictions.jsonl", {**plan.config, "mode": mode})
     phase["run_directory"] = str(run.directory)
     results, errors = [], []
+    outages = 0
     phase["status"] = "running"
 
     def checkpoint():
@@ -167,7 +179,8 @@ async def run_mode(plan, phase, directory, budgets, api_retries, *, on_start=Non
                        usage={"llm": asdict(usage), "decision": asdict(verifier.usage) if verifier else None,
                               "cost_estimate": costs, "elapsed_seconds": perf_counter() - started})
         phase.update(actual_cost_usd=costs["total_usd"], elapsed_seconds=perf_counter() - started,
-                     known_cost_subtotal_usd=sum(value for key, value in costs.items() if key != "total_usd" and value is not None),
+                     cost_is_lower_bound=costs["is_lower_bound"],
+                     known_cost_subtotal_usd=sum(costs[key] for key in ("llm_usd", "decision_usd") if costs[key] is not None),
                      metrics=metrics.model_dump(mode="json"), _predictions=[row.model_dump(mode="json") for row in results])
 
     checkpoint()
@@ -182,14 +195,20 @@ async def run_mode(plan, phase, directory, budgets, api_retries, *, on_start=Non
                         use_verifier=mode == "full", max_attempts=plan.pipeline.max_attempts,
                         wrong_threshold=plan.pipeline.wrong_threshold)
                 except APICallBudgetError:
-                    errors.append({"case_id": case.case_id, "error": "budget_exhausted"})
+                    errors.append({"case_id": case.case_id, "error": "budget_exhausted", "kind": "budget_exhausted"})
                     phase.update(status="stopped", stop_reason="budget_exhausted")
                 except PipelineError as error:
-                    errors.append({"case_id": case.case_id, "error": type(error).__name__})
+                    # kind отделяет сбой сервиса от ошибки модели: первый исключается из анализа.
+                    errors.append({"case_id": case.case_id, "error": type(error).__name__,
+                                   "kind": "api_error" if api_failure(error) else "case_error"})
+                    outages = outages + 1 if service_unavailable(error) else 0
                     if service_stop(error):
                         phase.update(status="stopped", stop_reason="service_error")
+                    elif outages >= MAX_CONSECUTIVE_OUTAGES:
+                        phase.update(status="stopped", stop_reason="service_unavailable")
                 else:
                     results.append(result)
+                    outages = 0
                 checkpoint()
                 assert_unchanged(plan)
                 if phase["status"] == "stopped":
@@ -238,6 +257,7 @@ async def run_paired(plan, phase, directory, budgets, api_retries, *, on_start=N
         report = build_report(phase["_records"], plan.labels)
         report["cost_comparison"] = build_cost_comparison(events, plan.decision)
         phase.update(actual_cost_usd=report["cost_comparison"]["audit_total_usd"],
+                     cost_is_lower_bound=report["cost_comparison"]["is_lower_bound"],
                      known_cost_subtotal_usd=report["cost_comparison"]["known_subtotal_usd"],
                      elapsed_seconds=perf_counter() - started)
         _json(directory / "report.json", report)
@@ -311,7 +331,12 @@ async def run_experiment(args):
     finally:
         save()
     final = json.loads(destination.read_text(encoding="utf-8"))
-    print(f"Эксперимент: {status}. Вызовы: {final['calls']}. Стоимость USD: {final['costs']['actual_total_usd']}")
+    costs = final["costs"]
+    bound = ""
+    if costs["is_lower_bound"]:
+        bound = (" (нижняя граница: были запросы без ответа)" if costs["actual_total_usd"] is not None
+                 else f" (известная часть: {costs['known_subtotal_usd']}; были запросы без ответа)")
+    print(f"Эксперимент: {status}. Вызовы: {final['calls']}. Стоимость USD: {costs['actual_total_usd']}{bound}")
     print(f"Отчёт: {destination}")
     return destination
 

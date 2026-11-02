@@ -13,10 +13,10 @@ from pydantic import ValidationError
 from typesafe_sdk import AsyncTypeSafeClient, TypeSafeError, TypeSafeAPIError, TypeSafeAPIConnectionError
 
 from src.cases.document_type import NONE_REASON_TEXT
-from src.client import DecisionUsage, decision_sdk_options, clm_sdk_options, jeff_sdk_options, laya_sdk_options, laya_request_options, prepare_clm_questions
+from src.client import DecisionModelError, DecisionUsage, decision_sdk_options, clm_sdk_options, jeff_sdk_options, laya_sdk_options, laya_request_options, prepare_clm_questions
 from src.extraction import ExtractionProposal, prepare_fields
 from src.detection_metrics import calculate_detection_metrics, calculate_field_outcomes, print_detection_metrics, print_field_outcomes
-from src.llm import LLMUsage, LLMError, LLMResponseError, LLMRateLimitError, build_extraction_prompt
+from src.llm import LLMUsage, LLMError, LLMResponseError, LLMRateLimitError, LLMUnavailableError, build_extraction_prompt
 from src.repairs import merge_repair
 from src.request_budget import APICallBudget, APICallBudgetError as AuditBudgetError, BudgetedExtractor
 from src.schemas.document_schemas import InvoiceFields, TransferFields
@@ -24,6 +24,7 @@ from src.main import DEFAULT_INPUT_PATH, DEFAULT_LABELS_PATH, estimate_usage_cos
 from src.metrics import AcceptanceMetrics, calculate_metrics, field_matches
 from src.pipeline import DocumentTypeDecision, PipelineError, PipelineRejectionError, process_selected_document
 from src.settings import CLMSettings, JeffSettings, DecisionModelSettings, LayaSettings, LLMSettings, PipelineSettings
+from src.verification import VerificationError
 
 
 class AuditResumeError(ValueError):
@@ -59,7 +60,7 @@ def build_cost_comparison(events, decision_settings=None, *, reused_baseline=Fal
     phases = {}
     for phase in ("classification", "baseline", "verification", "enhanced"):
         entries = [event for event in events if event["phase"] == phase]
-        costs, counts = [], {}
+        costs, counts, lower_bound = [], {}, False
         for event in entries:
             usage = event["usage"]
             if usage is None:
@@ -69,12 +70,15 @@ def build_cost_comparison(events, decision_settings=None, *, reused_baseline=Fal
                 if key != "estimated_cost":
                     counts[key] = counts.get(key, 0) + value
             if phase == "verification":
-                cost = estimate_usage_costs(None, DecisionUsage(**usage),
-                                            decision_settings=decision_settings, include_decision=True)["decision_usd"]
+                estimate = estimate_usage_costs(None, DecisionUsage(**usage),
+                                                decision_settings=decision_settings, include_decision=True)
+                cost = estimate["decision_usd"]
             else:
-                cost = estimate_usage_costs(LLMUsage(**usage), None)["llm_usd"]
+                estimate = estimate_usage_costs(LLMUsage(**usage), None)
+                cost = estimate["llm_usd"]
+            lower_bound = lower_bound or estimate["is_lower_bound"]
             costs.append(cost)
-        phases[phase] = {"calls": len(entries), "usage": counts,
+        phases[phase] = {"calls": len(entries), "usage": counts, "is_lower_bound": lower_bound,
                          "cost_usd": sum(costs) if all(cost is not None for cost in costs) else None,
                          "known_subtotal_usd": sum(cost for cost in costs if cost is not None)}
 
@@ -91,6 +95,7 @@ def build_cost_comparison(events, decision_settings=None, *, reused_baseline=Fal
             "llm_only_usd": baseline, "full_usd": full, "extra_full_usd": extra,
             "full_to_llm_only_ratio": full / baseline if full is not None and baseline is not None and baseline > 0 else None,
             "audit_total_usd": actual,
+            "is_lower_bound": any(item["is_lower_bound"] for item in phases.values()),
             "known_subtotal_usd": sum(item["known_subtotal_usd"] for item in phases.values()),
             "phases": phases,
             "note": "Shared LLM classification and baseline, not two independent production runs. "
@@ -107,13 +112,16 @@ def print_cost_comparison(costs):
           f"дополнительные проверки и ремонт: {price(costs['extra_full_usd'])}", flush=True)
     print(f"  Фактическая оценка расходов аудита: {price(costs['audit_total_usd'])} "
           "(общий базовый этап учтён один раз).", flush=True)
+    if costs["is_lower_bound"] and costs["audit_total_usd"] is not None:
+        print("  Это нижняя граница: часть запросов осталась без ответа и могла быть оплачена.", flush=True)
     if costs["full_to_llm_only_ratio"] is not None:
         print(f"  full / llm-only: {costs['full_to_llm_only_ratio']:.3f}×", flush=True)
     if costs["reused_baseline"]:
         print("  Цена прежней baseline неизвестна; учтены только новые запросы текущего запуска.", flush=True)
     if costs["audit_total_usd"] is None:
+        unanswered = "; часть запросов осталась без ответа" if costs["is_lower_bound"] else ""
         print(f"  Известная часть расходов: {price(costs['known_subtotal_usd'])}; "
-              "полный итог неизвестен из-за usage или тарифов.", flush=True)
+              f"полный итог неизвестен из-за usage или тарифов{unanswered}.", flush=True)
 
 
 def audit_llm_settings(settings, *, api_retries=2):
@@ -127,6 +135,35 @@ def audit_llm_settings(settings, *, api_retries=2):
 def temporary_api_error(error):
     return (isinstance(error, TypeSafeAPIConnectionError)
             or isinstance(error, TypeSafeAPIError) and (error.status == 408 or error.status >= 500))
+
+
+# Столько кейсов подряд без ответа API останавливают прогон: долгий сбой иначе
+# расходует лимит вызовов на повторы по всем оставшимся кейсам.
+MAX_CONSECUTIVE_OUTAGES = 2
+
+
+def service_unavailable(error):
+    """API не ответил после всех повторов: сеть, таймаут или 408/5xx."""
+    while error is not None:
+        if isinstance(error, LLMUnavailableError) or temporary_api_error(error):
+            return True
+        error = error.__cause__
+    return False
+
+
+def api_failure(error):
+    """Сбой сервиса, а не ответа модели: сеть, таймаут, HTTP-ошибка, сбой модели решений.
+
+    Ответ LLM, не прошедший схему или проверки, сюда не относится: это ошибка кейса.
+    """
+    while error is not None:
+        if isinstance(error, (LLMUnavailableError, LLMRateLimitError, DecisionModelError,
+                              VerificationError, TypeSafeError)):
+            return True
+        if isinstance(error, LLMError) and not isinstance(error, LLMResponseError) and error.status_code is not None:
+            return True
+        error = error.__cause__
+    return False
 
 
 def service_stop(error):
@@ -164,11 +201,15 @@ class AuditDecisionModel:
 
     async def ainvoke(self, state, questions, response_model):
         self.usage.sdk_calls += 1
-        response = await self.sdk.system_one(
-            state=state.model_dump(mode="json"),
-            questions=self.prepare_questions(questions.model_dump(mode="json")),
-            **self.request_options,
-        )
+        try:
+            response = await self.sdk.system_one(
+                state=state.model_dump(mode="json"),
+                questions=self.prepare_questions(questions.model_dump(mode="json")),
+                **self.request_options,
+            )
+        except TypeSafeAPIError:
+            self.usage.error_responses += 1  # отказ сервера не тарифицируется
+            raise
         self.usage.responses += 1
         metadata = getattr(response, "usage", None)
         counts = (getattr(metadata, "input_tokens", None), getattr(metadata, "output_tokens", None))
@@ -205,7 +246,7 @@ async def audit_cases(cases, extractor, jev, *, max_jev_calls=10, max_attempts=2
     if not 0 <= api_retries <= 5:
         raise ValueError("Число сетевых повторов должно быть от 0 до 5")
     budget = verifier_budget if verifier_budget is not None else APICallBudget(max_jev_calls)
-    records, stopped = [], False
+    records, stopped, outages = [], False, 0
     resume_records = validate_resume_records(resume_records or {}, cases)
 
     def emit(record):
@@ -227,6 +268,7 @@ async def audit_cases(cases, extractor, jev, *, max_jev_calls=10, max_attempts=2
         }
         records.append(record)
         stage = "baseline"
+        outage = False
         seed = None
         for key in ("error_type", "failure_reason", "validation_failures"):
             record.pop(key, None)
@@ -387,6 +429,7 @@ async def audit_cases(cases, extractor, jev, *, max_jev_calls=10, max_attempts=2
             # Сетевые ошибки SDK также наследуют OSError; это не сбой записи.
             record.update(status="api_error", error_type=type(error).__name__)
             stopped = service_stop(error)
+            outage = service_unavailable(error)
         except OSError:
             raise  # Сбой сохранения не должен выглядеть как результат API-проверки.
         except Exception as error:
@@ -404,6 +447,9 @@ async def audit_cases(cases, extractor, jev, *, max_jev_calls=10, max_attempts=2
             else:
                 record["status"] = "api_error"
                 stopped = service_stop(error)
+                outage = service_unavailable(error)
+        outages = outages + 1 if outage else 0
+        stopped = stopped or outages >= MAX_CONSECUTIVE_OUTAGES
         emit(record)
     return records
 

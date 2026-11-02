@@ -1,0 +1,96 @@
+{
+  "version": "jev-v2",
+  "created_at_utc": "2026-10-23T18:05:49.916124+00:00",
+  "updated_at_utc": "2026-10-24T17:56:18.546839+00:00",
+  "scope": "classification and field verification prompts; no LLM extraction prompt",
+  "dependencies": {
+    "pydantic": "2.13.5",
+    "typesafe-sdk": "0.7.2"
+  },
+  "sources": [
+    {
+      "source": "src/verification.py",
+      "snapshot": "verification.py.txt",
+      "sha256": "89e2553f1504b84b5c24c3e3d768d5395af5d67223c41fee579d49bbc4775718"
+    },
+    {
+      "source": "src/field_rules.py",
+      "snapshot": "field_rules.py.txt",
+      "sha256": "7bcee87717670e7faa1916cac95e0114705523b38b9a761c901b52581bfed0f5"
+    },
+    {
+      "source": "src/cases/document_type.py",
+      "snapshot": "document_type.py.txt",
+      "sha256": "78202fbbb7bcdbe1ff4efc72ac5590b6c477f8d043b1ee12a0d1c8c0898fde1d"
+    },
+    {
+      "source": "data/form_templates.json",
+      "snapshot": "form_templates.json",
+      "sha256": "e58e53a7afbcc9bc9c4e4fd88b2aa358c60efeee9030304b27be58e0ed675099"
+    },
+    {
+      "source": "src/extraction.py",
+      "snapshot": "context/extraction.py.txt",
+      "sha256": "07d31107b768425420a755fba828e59ede234b9b2235f184e00cfe0e7e9affd8"
+    },
+    {
+      "source": "src/schemas/document_schemas.py",
+      "snapshot": "context/document_schemas.py.txt",
+      "sha256": "862d6a17f9883696de04d30eb8675b5c40b95ea489f2d470f4de86c297906468"
+    },
+    {
+      "source": "src/schemas/extraction_schemas.py",
+      "snapshot": "context/extraction_schemas.py.txt",
+      "sha256": "542519b63d0da4468febcfc68454d1765f22c16ee3a13f545df88ca40ae0b1f5"
+    },
+    {
+      "source": "src/schemas/schemas.py",
+      "snapshot": "context/schemas.py.txt",
+      "sha256": "22b5bc5c981ea670cef33955a0b71c26d8003db37d4c174307b4cdfbdc6cb951"
+    }
+  ],
+  "artifacts": {
+    "verification.py.txt": {
+      "sha256": "89e2553f1504b84b5c24c3e3d768d5395af5d67223c41fee579d49bbc4775718",
+      "bytes": 24729
+    },
+    "field_rules.py.txt": {
+      "sha256": "7bcee87717670e7faa1916cac95e0114705523b38b9a761c901b52581bfed0f5",
+      "bytes": 8875
+    },
+    "document_type.py.txt": {
+      "sha256": "78202fbbb7bcdbe1ff4efc72ac5590b6c477f8d043b1ee12a0d1c8c0898fde1d",
+      "bytes": 9224
+    },
+    "form_templates.json": {
+      "sha256": "e58e53a7afbcc9bc9c4e4fd88b2aa358c60efeee9030304b27be58e0ed675099",
+      "bytes": 3033
+    },
+    "context/extraction.py.txt": {
+      "sha256": "07d31107b768425420a755fba828e59ede234b9b2235f184e00cfe0e7e9affd8",
+      "bytes": 24257
+    },
+    "context/document_schemas.py.txt": {
+      "sha256": "862d6a17f9883696de04d30eb8675b5c40b95ea489f2d470f4de86c297906468",
+      "bytes": 3315
+    },
+    "context/extraction_schemas.py.txt": {
+      "sha256": "542519b63d0da4468febcfc68454d1765f22c16ee3a13f545df88ca40ae0b1f5",
+      "bytes": 3959
+    },
+    "context/schemas.py.txt": {
+      "sha256": "22b5bc5c981ea670cef33955a0b71c26d8003db37d4c174307b4cdfbdc6cb951",
+      "bytes": 1572
+    },
+    "resolved_rules.json": {
+      "sha256": "75eee13351b498fbb9bdb5f45d049b8aba6045f07992c08258f8b908f8735ed2",
+      "bytes": 21283
+    },
+    "README.md": {
+      "sha256": "eba3cdf14950ae88c1e495eb544846a28fab0dcfcb0a66308622d9e85cad3873",
+      "bytes": 2016
+    }
+  },
+  "derived_from": "jev-v1",
+  "provenance": "hand-edited from jev-v1; sha256 values describe snapshot files, not src revisions"
+}
