@@ -262,7 +262,14 @@ def _calculate(
             match.group() == operand.source.quote.strip()
             for match in _NUMBERS.finditer(indexed[operand.source.message_id].text)
         ):
-            raise ExtractionError("Операнд должен быть целым числовым фрагментом, а не частью числа", code="invalid_operand")
+            if re.fullmatch(_NUMBER, operand.source.quote.strip()):
+                raise ExtractionError("Операнд должен быть целым числовым фрагментом, а не частью числа", code="invalid_operand")
+            # Текст уходит в ремонт: фраза вместо числа требует иной подсказки, чем часть числа.
+            raise ExtractionError(
+                "quote операнда — ровно одно число без слов и единиц ('8700', а не '5 шт. по 8700 рублей'). "
+                "Для итога по строкам дай каждому количеству и цене свой операнд: q1 * p1 + q2 * p2.",
+                code="invalid_operand",
+            )
         if operand.name in values:
             raise ExtractionError("Повторяющееся имя операнда", code="invalid_calculation")
         values[operand.name] = _decimal(operand.source.quote)
