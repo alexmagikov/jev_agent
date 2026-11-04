@@ -13,7 +13,7 @@
   "split": "test",
   "evidence_rule": "all user messages that state or select the current value",
   "input_sha256": "5959c02345503ecee8de07a9f522b57374d839c3f930f7319640db44724328c9",
-  "labels_sha256": "f05a4f7974d1ba4d53413664d12677f61ccf2bfb3f564e5fcf5659e2257f9457",
+  "labels_sha256": "8f059869fc79dff72b6bd5445ca6e020eca2f654ed8489dd0041d5f9d18e3945",
   "cases": [
     {
       "case_id": "E001",

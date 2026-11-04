@@ -1,0 +1,1174 @@
+{
+  "dataset_version": 1,
+  "name": "challenge",
+  "synthetic": true,
+  "authorship": "assistant_authored_before_model_runs",
+  "human_reviewed": false,
+  "annotation_status": "draft_for_human_review",
+  "case_count": 104,
+  "splits": {
+    "dev": 34,
+    "test": 70
+  },
+  "evidence_rule": "all user messages that state or select the current value",
+  "requisites": "fictional, with valid INN check digits and account keys for the stated BIK",
+  "input_sha256": "1c5727c18593b15053b2f53c227b71a89229e343ce2da1fb1fde3402a3e37bd2",
+  "labels_sha256": "2b5ec87293da19580dfee95a62c36c900b3b370a6e6d8cb904e8e9e2813a1f90",
+  "cases": [
+    {
+      "case_id": "H001",
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "tags": [
+        "reference_to_earlier_value",
+        "quantity_correction",
+        "arithmetic"
+      ],
+      "rationale": "Отсылка «по той же цене» после смены количества: 55 × 85 + 12 × 30 = 5035."
+    },
+    {
+      "case_id": "H002",
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "tags": [
+        "reverted_correction",
+        "reference_to_earlier_value",
+        "price_correction",
+        "arithmetic"
+      ],
+      "rationale": "Поправка количества отменена отсылкой «как в самом начале»; цена стола изменена: 6 × 3200 + 2 × 9000 = 37200."
+    },
+    {
+      "case_id": "H003",
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "tags": [
+        "ownership",
+        "seller_requisites_decoy",
+        "complete_details"
+      ],
+      "rationale": "Полные реквизиты продавца названы первыми и не относятся к покупателю."
+    },
+    {
+      "case_id": "H004",
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "tags": [
+        "partial_discount",
+        "arithmetic",
+        "multiple_items"
+      ],
+      "rationale": "Скидка 10% только на палатки и только в итоге: 3 × 12400 × 0,9 + 5 × 3100 = 48980."
+    },
+    {
+      "case_id": "H005",
+      "split": "dev",
+      "document_type": "transfer_draft",
+      "tags": [
+        "thousands_shorthand",
+        "latest_correction",
+        "assistant_not_evidence"
+      ],
+      "rationale": "Сумма в тысячах с поправкой: 22,5 тыс. = 22,5 × 1000 = 22500; прежние 27,5 тыс. устарели."
+    },
+    {
+      "case_id": "H006",
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "tags": [
+        "withdrawn_item",
+        "added_item",
+        "arithmetic"
+      ],
+      "rationale": "Позиция снята, другая добавлена позже: 500 × 4 + 300 × 18 = 7400."
+    },
+    {
+      "case_id": "H007",
+      "split": "dev",
+      "document_type": "transfer_draft",
+      "tags": [
+        "resolved_alternatives",
+        "negation",
+        "paired_details"
+      ],
+      "rationale": "Карта выбрана через отрицание «это не Сбер»: ВТБ ****7710."
+    },
+    {
+      "case_id": "H008",
+      "split": "dev",
+      "document_type": "transfer_draft",
+      "tags": [
+        "quoted_foreign_instruction",
+        "ownership",
+        "self_transfer"
+      ],
+      "rationale": "Цитата чужой просьбы с другой суммой и картой не относится к переводу."
+    },
+    {
+      "case_id": "H009",
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "tags": [
+        "reference_without_value",
+        "missing_amount"
+      ],
+      "rationale": "Отсылка к прошлому счёту без названной суммы: сумму нельзя выдумать."
+    },
+    {
+      "case_id": "H010",
+      "split": "dev",
+      "document_type": "none",
+      "tags": [
+        "cancelled_request"
+      ],
+      "rationale": "Пользователь откладывает счёт до согласования: запрос отменён."
+    },
+    {
+      "case_id": "H011",
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "tags": [
+        "reference_to_earlier_value",
+        "quantity_correction",
+        "arithmetic"
+      ],
+      "rationale": "Отсылка к прежней цене после смены количества: 7 × 2900 + 5 × 2300 = 31800."
+    },
+    {
+      "case_id": "H012",
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "tags": [
+        "reference_to_earlier_value",
+        "quantity_correction",
+        "arithmetic"
+      ],
+      "rationale": "Отсылка к прежней цене после смены количества: 12 × 12400 + 3 × 2300 = 155700."
+    },
+    {
+      "case_id": "H013",
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "tags": [
+        "reverted_correction",
+        "reference_to_earlier_value",
+        "price_correction",
+        "arithmetic"
+      ],
+      "rationale": "Поправка количества отменена отсылкой к первому сообщению; новая цена второй позиции: 5 × 18900 + 4 × 7300 = 123700."
+    },
+    {
+      "case_id": "H014",
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "tags": [
+        "reverted_correction",
+        "reference_to_earlier_value",
+        "price_correction",
+        "arithmetic"
+      ],
+      "rationale": "Поправка количества отменена отсылкой к первому сообщению; новая цена второй позиции: 6 × 7600 + 2 × 18500 = 82600."
+    },
+    {
+      "case_id": "H015",
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "tags": [
+        "ownership",
+        "seller_requisites_decoy",
+        "complete_details"
+      ],
+      "rationale": "Полные реквизиты продавца с верными контрольными разрядами не относятся к покупателю."
+    },
+    {
+      "case_id": "H016",
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "tags": [
+        "partial_discount",
+        "arithmetic",
+        "multiple_items"
+      ],
+      "rationale": "Скидка 15% только на одну позицию и только в итоге: 33340."
+    },
+    {
+      "case_id": "H017",
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "tags": [
+        "partial_discount",
+        "arithmetic",
+        "multiple_items"
+      ],
+      "rationale": "Скидка 15% только на одну позицию и только в итоге: 33020."
+    },
+    {
+      "case_id": "H018",
+      "split": "dev",
+      "document_type": "transfer_draft",
+      "tags": [
+        "thousands_shorthand",
+        "latest_correction",
+        "assistant_not_evidence"
+      ],
+      "rationale": "Сумма в тысячах с поправкой: 14,5 тыс. = 14500."
+    },
+    {
+      "case_id": "H019",
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "tags": [
+        "withdrawn_item",
+        "added_item",
+        "arithmetic"
+      ],
+      "rationale": "Позиция снята, другая добавлена позже: 8 × 1150 + 4 × 3900 = 24800."
+    },
+    {
+      "case_id": "H020",
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "tags": [
+        "withdrawn_item",
+        "added_item",
+        "arithmetic"
+      ],
+      "rationale": "Позиция снята, другая добавлена позже: 8 × 18900 + 2 × 2300 = 155800."
+    },
+    {
+      "case_id": "H021",
+      "split": "dev",
+      "document_type": "transfer_draft",
+      "tags": [
+        "resolved_alternatives",
+        "negation",
+        "paired_details"
+      ],
+      "rationale": "Карта выбрана через отрицание: Газпромбанк ****7503."
+    },
+    {
+      "case_id": "H022",
+      "split": "dev",
+      "document_type": "transfer_draft",
+      "tags": [
+        "quoted_foreign_instruction",
+        "ownership",
+        "self_transfer"
+      ],
+      "rationale": "Цитата чужой просьбы с другой суммой и картой не относится к переводу."
+    },
+    {
+      "case_id": "H023",
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "tags": [
+        "reference_without_value",
+        "missing_amount"
+      ],
+      "rationale": "Отсылка к прошлой цене без названной суммы: сумму нельзя выдумать."
+    },
+    {
+      "case_id": "H024",
+      "split": "dev",
+      "document_type": "none",
+      "tags": [
+        "cancelled_request"
+      ],
+      "rationale": "Пользователь отменяет запрос на счёт."
+    },
+    {
+      "case_id": "H025",
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "tags": [
+        "multiple_corrections",
+        "price_correction",
+        "arithmetic"
+      ],
+      "rationale": "Количество и цена первой позиции исправлены в разных репликах: 8 × 9800 + 2 × 1450 = 81300."
+    },
+    {
+      "case_id": "H026",
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "tags": [
+        "multiple_corrections",
+        "price_correction",
+        "arithmetic"
+      ],
+      "rationale": "Количество и цена первой позиции исправлены в разных репликах: 12 × 4400 + 4 × 3200 = 65600."
+    },
+    {
+      "case_id": "H027",
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "tags": [
+        "decimal_quantity",
+        "latest_correction",
+        "arithmetic"
+      ],
+      "rationale": "Дробные часы после поправки: 4,5 × 1800 = 8100."
+    },
+    {
+      "case_id": "H028",
+      "split": "dev",
+      "document_type": "transfer_draft",
+      "tags": [
+        "sum_across_turns",
+        "arithmetic"
+      ],
+      "rationale": "Сумма собирается из двух реплик: 9000 + 3500 = 12500."
+    },
+    {
+      "case_id": "H029",
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "tags": [
+        "control",
+        "arithmetic"
+      ],
+      "rationale": "Контроль ложных замечаний: всё в одной реплике, 15600."
+    },
+    {
+      "case_id": "H030",
+      "split": "dev",
+      "document_type": "transfer_draft",
+      "tags": [
+        "control",
+        "self_transfer"
+      ],
+      "rationale": "Контроль ложных замечаний: простой перевод себе."
+    },
+    {
+      "case_id": "H031",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "reference_to_earlier_value",
+        "quantity_correction",
+        "arithmetic"
+      ],
+      "rationale": "Отсылка к прежней цене после смены количества: 7 × 2300 + 5 × 3100 = 31600."
+    },
+    {
+      "case_id": "H032",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "reference_to_earlier_value",
+        "quantity_correction",
+        "arithmetic"
+      ],
+      "rationale": "Отсылка к прежней цене после смены количества: 7 × 15800 + 6 × 3200 = 129800."
+    },
+    {
+      "case_id": "H033",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "reference_to_earlier_value",
+        "quantity_correction",
+        "arithmetic"
+      ],
+      "rationale": "Отсылка к прежней цене после смены количества: 7 × 310 + 6 × 3900 = 25570."
+    },
+    {
+      "case_id": "H034",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "reference_to_earlier_value",
+        "quantity_correction",
+        "arithmetic"
+      ],
+      "rationale": "Отсылка к прежней цене после смены количества: 10 × 4200 + 5 × 9500 = 89500."
+    },
+    {
+      "case_id": "H035",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "reference_to_earlier_value",
+        "quantity_correction",
+        "arithmetic"
+      ],
+      "rationale": "Отсылка к прежней цене после смены количества: 12 × 3100 + 4 × 9500 = 75200."
+    },
+    {
+      "case_id": "H036",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "reference_to_earlier_value",
+        "quantity_correction",
+        "arithmetic"
+      ],
+      "rationale": "Отсылка к прежней цене после смены количества: 12 × 3900 + 6 × 3100 = 65400."
+    },
+    {
+      "case_id": "H037",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "reverted_correction",
+        "reference_to_earlier_value",
+        "price_correction",
+        "arithmetic"
+      ],
+      "rationale": "Поправка количества отменена отсылкой к первому сообщению; новая цена второй позиции: 5 × 15800 + 4 × 1300 = 84200."
+    },
+    {
+      "case_id": "H038",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "reverted_correction",
+        "reference_to_earlier_value",
+        "price_correction",
+        "arithmetic"
+      ],
+      "rationale": "Поправка количества отменена отсылкой к первому сообщению; новая цена второй позиции: 6 × 8700 + 2 × 15400 = 83000."
+    },
+    {
+      "case_id": "H039",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "reverted_correction",
+        "reference_to_earlier_value",
+        "price_correction",
+        "arithmetic"
+      ],
+      "rationale": "Поправка количества отменена отсылкой к первому сообщению; новая цена второй позиции: 4 × 12400 + 3 × 4000 = 61600."
+    },
+    {
+      "case_id": "H040",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "reverted_correction",
+        "reference_to_earlier_value",
+        "price_correction",
+        "arithmetic"
+      ],
+      "rationale": "Поправка количества отменена отсылкой к первому сообщению; новая цена второй позиции: 8 × 18900 + 4 × 2500 = 161200."
+    },
+    {
+      "case_id": "H041",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "reverted_correction",
+        "reference_to_earlier_value",
+        "price_correction",
+        "arithmetic"
+      ],
+      "rationale": "Поправка количества отменена отсылкой к первому сообщению; новая цена второй позиции: 3 × 3200 + 2 × 15500 = 40600."
+    },
+    {
+      "case_id": "H042",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "reverted_correction",
+        "reference_to_earlier_value",
+        "price_correction",
+        "arithmetic"
+      ],
+      "rationale": "Поправка количества отменена отсылкой к первому сообщению; новая цена второй позиции: 5 × 12400 + 4 × 3600 = 76400."
+    },
+    {
+      "case_id": "H043",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "ownership",
+        "seller_requisites_decoy",
+        "complete_details"
+      ],
+      "rationale": "Полные реквизиты продавца с верными контрольными разрядами не относятся к покупателю."
+    },
+    {
+      "case_id": "H044",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "ownership",
+        "seller_requisites_decoy",
+        "complete_details"
+      ],
+      "rationale": "Полные реквизиты продавца с верными контрольными разрядами не относятся к покупателю."
+    },
+    {
+      "case_id": "H045",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "ownership",
+        "seller_requisites_decoy",
+        "complete_details"
+      ],
+      "rationale": "Полные реквизиты продавца с верными контрольными разрядами не относятся к покупателю."
+    },
+    {
+      "case_id": "H046",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "ownership",
+        "seller_requisites_decoy",
+        "complete_details"
+      ],
+      "rationale": "Полные реквизиты продавца с верными контрольными разрядами не относятся к покупателю."
+    },
+    {
+      "case_id": "H047",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "ownership",
+        "seller_requisites_decoy",
+        "complete_details"
+      ],
+      "rationale": "Полные реквизиты продавца с верными контрольными разрядами не относятся к покупателю."
+    },
+    {
+      "case_id": "H048",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "partial_discount",
+        "arithmetic",
+        "multiple_items"
+      ],
+      "rationale": "Скидка 15% только на одну позицию и только в итоге: 39640."
+    },
+    {
+      "case_id": "H049",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "partial_discount",
+        "arithmetic",
+        "multiple_items"
+      ],
+      "rationale": "Скидка 15% только на одну позицию и только в итоге: 43100."
+    },
+    {
+      "case_id": "H050",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "partial_discount",
+        "arithmetic",
+        "multiple_items"
+      ],
+      "rationale": "Скидка 10% только на одну позицию и только в итоге: 77850."
+    },
+    {
+      "case_id": "H051",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "partial_discount",
+        "arithmetic",
+        "multiple_items"
+      ],
+      "rationale": "Скидка 15% только на одну позицию и только в итоге: 33940."
+    },
+    {
+      "case_id": "H052",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "partial_discount",
+        "arithmetic",
+        "multiple_items"
+      ],
+      "rationale": "Скидка 15% только на одну позицию и только в итоге: 40280."
+    },
+    {
+      "case_id": "H053",
+      "split": "test",
+      "document_type": "transfer_draft",
+      "tags": [
+        "thousands_shorthand",
+        "latest_correction",
+        "assistant_not_evidence"
+      ],
+      "rationale": "Сумма в тысячах с поправкой: 15,5 тыс. = 15500."
+    },
+    {
+      "case_id": "H054",
+      "split": "test",
+      "document_type": "transfer_draft",
+      "tags": [
+        "thousands_shorthand",
+        "latest_correction",
+        "assistant_not_evidence"
+      ],
+      "rationale": "Сумма в тысячах с поправкой: 18,5 тыс. = 18500."
+    },
+    {
+      "case_id": "H055",
+      "split": "test",
+      "document_type": "transfer_draft",
+      "tags": [
+        "thousands_shorthand",
+        "latest_correction",
+        "assistant_not_evidence"
+      ],
+      "rationale": "Сумма в тысячах с поправкой: 14,5 тыс. = 14500."
+    },
+    {
+      "case_id": "H056",
+      "split": "test",
+      "document_type": "transfer_draft",
+      "tags": [
+        "thousands_shorthand",
+        "latest_correction",
+        "assistant_not_evidence"
+      ],
+      "rationale": "Сумма в тысячах с поправкой: 22 тыс. = 22000."
+    },
+    {
+      "case_id": "H057",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "withdrawn_item",
+        "added_item",
+        "arithmetic"
+      ],
+      "rationale": "Позиция снята, другая добавлена позже: 9 × 180 + 3 × 7600 = 24420."
+    },
+    {
+      "case_id": "H058",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "withdrawn_item",
+        "added_item",
+        "arithmetic"
+      ],
+      "rationale": "Позиция снята, другая добавлена позже: 7 × 18900 + 3 × 310 = 133230."
+    },
+    {
+      "case_id": "H059",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "withdrawn_item",
+        "added_item",
+        "arithmetic"
+      ],
+      "rationale": "Позиция снята, другая добавлена позже: 8 × 1450 + 2 × 640 = 12880."
+    },
+    {
+      "case_id": "H060",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "withdrawn_item",
+        "added_item",
+        "arithmetic"
+      ],
+      "rationale": "Позиция снята, другая добавлена позже: 6 × 310 + 4 × 3200 = 14660."
+    },
+    {
+      "case_id": "H061",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "withdrawn_item",
+        "added_item",
+        "arithmetic"
+      ],
+      "rationale": "Позиция снята, другая добавлена позже: 8 × 2300 + 4 × 310 = 19640."
+    },
+    {
+      "case_id": "H062",
+      "split": "test",
+      "document_type": "transfer_draft",
+      "tags": [
+        "resolved_alternatives",
+        "negation",
+        "paired_details"
+      ],
+      "rationale": "Карта выбрана через отрицание: ВТБ ****6815."
+    },
+    {
+      "case_id": "H063",
+      "split": "test",
+      "document_type": "transfer_draft",
+      "tags": [
+        "resolved_alternatives",
+        "negation",
+        "paired_details"
+      ],
+      "rationale": "Карта выбрана через отрицание: Совкомбанк ****1690."
+    },
+    {
+      "case_id": "H064",
+      "split": "test",
+      "document_type": "transfer_draft",
+      "tags": [
+        "resolved_alternatives",
+        "negation",
+        "paired_details"
+      ],
+      "rationale": "Карта выбрана через отрицание: ВТБ ****7836."
+    },
+    {
+      "case_id": "H065",
+      "split": "test",
+      "document_type": "transfer_draft",
+      "tags": [
+        "resolved_alternatives",
+        "negation",
+        "paired_details"
+      ],
+      "rationale": "Карта выбрана через отрицание: Газпромбанк ****2996."
+    },
+    {
+      "case_id": "H066",
+      "split": "test",
+      "document_type": "transfer_draft",
+      "tags": [
+        "quoted_foreign_instruction",
+        "ownership",
+        "self_transfer"
+      ],
+      "rationale": "Цитата чужой просьбы с другой суммой и картой не относится к переводу."
+    },
+    {
+      "case_id": "H067",
+      "split": "test",
+      "document_type": "transfer_draft",
+      "tags": [
+        "quoted_foreign_instruction",
+        "ownership",
+        "self_transfer"
+      ],
+      "rationale": "Цитата чужой просьбы с другой суммой и картой не относится к переводу."
+    },
+    {
+      "case_id": "H068",
+      "split": "test",
+      "document_type": "transfer_draft",
+      "tags": [
+        "quoted_foreign_instruction",
+        "ownership",
+        "self_transfer"
+      ],
+      "rationale": "Цитата чужой просьбы с другой суммой и картой не относится к переводу."
+    },
+    {
+      "case_id": "H069",
+      "split": "test",
+      "document_type": "transfer_draft",
+      "tags": [
+        "quoted_foreign_instruction",
+        "ownership",
+        "self_transfer"
+      ],
+      "rationale": "Цитата чужой просьбы с другой суммой и картой не относится к переводу."
+    },
+    {
+      "case_id": "H070",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "reference_without_value",
+        "missing_amount"
+      ],
+      "rationale": "Отсылка к прошлой цене без названной суммы: сумму нельзя выдумать."
+    },
+    {
+      "case_id": "H071",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "reference_without_value",
+        "missing_amount"
+      ],
+      "rationale": "Отсылка к прошлой цене без названной суммы: сумму нельзя выдумать."
+    },
+    {
+      "case_id": "H072",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "reference_without_value",
+        "missing_amount"
+      ],
+      "rationale": "Отсылка к прошлой цене без названной суммы: сумму нельзя выдумать."
+    },
+    {
+      "case_id": "H073",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "reference_without_value",
+        "missing_amount"
+      ],
+      "rationale": "Отсылка к прошлой цене без названной суммы: сумму нельзя выдумать."
+    },
+    {
+      "case_id": "H074",
+      "split": "test",
+      "document_type": "none",
+      "tags": [
+        "cancelled_request"
+      ],
+      "rationale": "Пользователь отменяет запрос на счёт."
+    },
+    {
+      "case_id": "H075",
+      "split": "test",
+      "document_type": "none",
+      "tags": [
+        "cancelled_request"
+      ],
+      "rationale": "Пользователь отменяет запрос на счёт."
+    },
+    {
+      "case_id": "H076",
+      "split": "test",
+      "document_type": "none",
+      "tags": [
+        "cancelled_request"
+      ],
+      "rationale": "Пользователь отменяет запрос на счёт."
+    },
+    {
+      "case_id": "H077",
+      "split": "test",
+      "document_type": "none",
+      "tags": [
+        "cancelled_request"
+      ],
+      "rationale": "Пользователь отменяет запрос на счёт."
+    },
+    {
+      "case_id": "H078",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "multiple_corrections",
+        "price_correction",
+        "arithmetic"
+      ],
+      "rationale": "Количество и цена первой позиции исправлены в разных репликах: 8 × 19200 + 2 × 640 = 154880."
+    },
+    {
+      "case_id": "H079",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "multiple_corrections",
+        "price_correction",
+        "arithmetic"
+      ],
+      "rationale": "Количество и цена первой позиции исправлены в разных репликах: 9 × 9800 + 2 × 4200 = 96600."
+    },
+    {
+      "case_id": "H080",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "multiple_corrections",
+        "price_correction",
+        "arithmetic"
+      ],
+      "rationale": "Количество и цена первой позиции исправлены в разных репликах: 12 × 4400 + 1 × 2900 = 55700."
+    },
+    {
+      "case_id": "H081",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "multiple_corrections",
+        "price_correction",
+        "arithmetic"
+      ],
+      "rationale": "Количество и цена первой позиции исправлены в разных репликах: 12 × 4500 + 2 × 12400 = 78800."
+    },
+    {
+      "case_id": "H082",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "multiple_corrections",
+        "price_correction",
+        "arithmetic"
+      ],
+      "rationale": "Количество и цена первой позиции исправлены в разных репликах: 7 × 5800 + 3 × 180 = 41140."
+    },
+    {
+      "case_id": "H083",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "decimal_quantity",
+        "latest_correction",
+        "arithmetic"
+      ],
+      "rationale": "Дробные часы после поправки: 2,5 × 2000 = 5000."
+    },
+    {
+      "case_id": "H084",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "decimal_quantity",
+        "latest_correction",
+        "arithmetic"
+      ],
+      "rationale": "Дробные часы после поправки: 5,5 × 3200 = 17600."
+    },
+    {
+      "case_id": "H085",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "decimal_quantity",
+        "latest_correction",
+        "arithmetic"
+      ],
+      "rationale": "Дробные часы после поправки: 6,5 × 3000 = 19500."
+    },
+    {
+      "case_id": "H086",
+      "split": "test",
+      "document_type": "transfer_draft",
+      "tags": [
+        "sum_across_turns",
+        "arithmetic"
+      ],
+      "rationale": "Сумма собирается из двух реплик: 13000 + 1500 = 14500."
+    },
+    {
+      "case_id": "H087",
+      "split": "test",
+      "document_type": "transfer_draft",
+      "tags": [
+        "sum_across_turns",
+        "arithmetic"
+      ],
+      "rationale": "Сумма собирается из двух реплик: 9000 + 3500 = 12500."
+    },
+    {
+      "case_id": "H088",
+      "split": "test",
+      "document_type": "transfer_draft",
+      "tags": [
+        "sum_across_turns",
+        "arithmetic"
+      ],
+      "rationale": "Сумма собирается из двух реплик: 15000 + 2500 = 17500."
+    },
+    {
+      "case_id": "H089",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "control",
+        "arithmetic"
+      ],
+      "rationale": "Контроль ложных замечаний: всё в одной реплике, 21000."
+    },
+    {
+      "case_id": "H090",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "control",
+        "arithmetic"
+      ],
+      "rationale": "Контроль ложных замечаний: всё в одной реплике, 11800."
+    },
+    {
+      "case_id": "H091",
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "tags": [
+        "long_scattered",
+        "long_dialogue",
+        "distractor_questions",
+        "reference_to_earlier_value",
+        "arithmetic"
+      ],
+      "rationale": "Данные разбросаны по 13 репликам, вторая позиция «по той же цене, что первая»: 3 × 310 + 4 × 310 = 2170."
+    },
+    {
+      "case_id": "H092",
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "tags": [
+        "long_multiple_corrections",
+        "long_dialogue",
+        "reverted_correction",
+        "partial_discount",
+        "arithmetic"
+      ],
+      "rationale": "Поправки в 13 репликах, отмена цены и скидка 5% на одну позицию в итоге: 234940."
+    },
+    {
+      "case_id": "H093",
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "tags": [
+        "assistant_wrong_summary",
+        "long_dialogue",
+        "assistant_not_evidence",
+        "reference_to_earlier_value",
+        "arithmetic"
+      ],
+      "rationale": "Ассистент пересказал с ошибкой; новая позиция по исправленной цене, а не по цене ассистента: 31700."
+    },
+    {
+      "case_id": "H094",
+      "split": "dev",
+      "document_type": "invoice_draft",
+      "tags": [
+        "topic_switch",
+        "long_dialogue",
+        "distractor_numbers",
+        "extra_charge",
+        "arithmetic"
+      ],
+      "rationale": "Посреди счёта обсуждаются другие платежи; доставка добавлена к итогу без отдельной строки: 18490."
+    },
+    {
+      "case_id": "H095",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "long_scattered",
+        "long_dialogue",
+        "distractor_questions",
+        "reference_to_earlier_value",
+        "arithmetic"
+      ],
+      "rationale": "Данные разбросаны по 13 репликам, вторая позиция «по той же цене, что первая»: 2 × 18900 + 7 × 18900 = 170100."
+    },
+    {
+      "case_id": "H096",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "long_scattered",
+        "long_dialogue",
+        "distractor_questions",
+        "reference_to_earlier_value",
+        "arithmetic"
+      ],
+      "rationale": "Данные разбросаны по 13 репликам, вторая позиция «по той же цене, что первая»: 6 × 2700 + 4 × 2700 = 27000."
+    },
+    {
+      "case_id": "H097",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "long_scattered",
+        "long_dialogue",
+        "distractor_questions",
+        "reference_to_earlier_value",
+        "arithmetic"
+      ],
+      "rationale": "Данные разбросаны по 13 репликам, вторая позиция «по той же цене, что первая»: 2 × 2900 + 7 × 2900 = 26100."
+    },
+    {
+      "case_id": "H098",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "long_multiple_corrections",
+        "long_dialogue",
+        "reverted_correction",
+        "partial_discount",
+        "arithmetic"
+      ],
+      "rationale": "Поправки в 13 репликах, отмена цены и скидка 15% на одну позицию в итоге: 125580."
+    },
+    {
+      "case_id": "H099",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "long_multiple_corrections",
+        "long_dialogue",
+        "reverted_correction",
+        "partial_discount",
+        "arithmetic"
+      ],
+      "rationale": "Поправки в 13 репликах, отмена цены и скидка 10% на одну позицию в итоге: 56040."
+    },
+    {
+      "case_id": "H100",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "long_multiple_corrections",
+        "long_dialogue",
+        "reverted_correction",
+        "partial_discount",
+        "arithmetic"
+      ],
+      "rationale": "Поправки в 13 репликах, отмена цены и скидка 10% на одну позицию в итоге: 36390."
+    },
+    {
+      "case_id": "H101",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "assistant_wrong_summary",
+        "long_dialogue",
+        "assistant_not_evidence",
+        "reference_to_earlier_value",
+        "arithmetic"
+      ],
+      "rationale": "Ассистент пересказал с ошибкой; новая позиция по исправленной цене, а не по цене ассистента: 49900."
+    },
+    {
+      "case_id": "H102",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "assistant_wrong_summary",
+        "long_dialogue",
+        "assistant_not_evidence",
+        "reference_to_earlier_value",
+        "arithmetic"
+      ],
+      "rationale": "Ассистент пересказал с ошибкой; новая позиция по исправленной цене, а не по цене ассистента: 129200."
+    },
+    {
+      "case_id": "H103",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "topic_switch",
+        "long_dialogue",
+        "distractor_numbers",
+        "extra_charge",
+        "arithmetic"
+      ],
+      "rationale": "Посреди счёта обсуждаются другие платежи; доставка добавлена к итогу без отдельной строки: 20250."
+    },
+    {
+      "case_id": "H104",
+      "split": "test",
+      "document_type": "invoice_draft",
+      "tags": [
+        "topic_switch",
+        "long_dialogue",
+        "distractor_numbers",
+        "extra_charge",
+        "arithmetic"
+      ],
+      "rationale": "Посреди счёта обсуждаются другие платежи; доставка добавлена к итогу без отдельной строки: 133750."
+    }
+  ]
+}
