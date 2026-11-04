@@ -299,6 +299,14 @@ def _calculate(
                     return left * right
                 if isinstance(node.op, ast.Div):
                     return left / right
+            if isinstance(node, ast.Constant):
+                # Текст уходит в ремонт: число из реплики должно стать операндом, иначе его не проверить.
+                raise ExtractionError(
+                    "В expression есть число, которое не является разрешённой константой (0, 1, 60, 100, 1000). "
+                    "Процент скидки и другие числа из реплик передай отдельным операндом с цитатой "
+                    "(например discount с quote '5') и используй его имя: q * p * (100 - discount) / 100.",
+                    code="invalid_calculation",
+                )
             raise ExtractionError("В формуле разрешены только операнды, +, -, *, / и скобки", code="invalid_calculation")
 
         # Сумма и цена единицы — деньги: округляем до копеек, половину копейки вверх.
