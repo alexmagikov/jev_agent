@@ -550,6 +550,12 @@ class AsyncLLMExtractor:
         )
 
 
+    async def complete_json[ResponseT: BaseModel](
+        self, system: str, user: dict, response_model: type[ResponseT], schema: dict, schema_name: str,
+    ) -> ResponseT:
+        """Тот же транспорт и учёт расхода для других ролей LLM (например, проверяющего)."""
+        return await self._complete_json(system, user, response_model, schema, schema_name)
+
     async def _complete_json[ResponseT: BaseModel](
         self,
         system: str,
