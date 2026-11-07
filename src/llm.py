@@ -15,6 +15,7 @@ from pydantic import BaseModel, ValidationError
 from src.cases.document_type import DocumentMessage, DocumentTypeQuestion, NO_REQUEST_CRITERION, NoneReasonQuestion
 from src.extraction import (
     ExtractionProposal, PreparedFields, SupportedDocumentType, get_proposal_model, get_proposal_schema, get_template,
+    typed_proposal,
 )
 from src.field_rules import (
     INVOICE_AMOUNT_RULE, INVOICE_SUBJECT_RULE, ITEM_DESCRIPTION_RULE, ITEM_QUANTITY_RULE,
@@ -502,7 +503,7 @@ class AsyncLLMExtractor:
             )
             try:
                 merged = apply_quote_fragment_selections(previous_proposal, options, selected.selections)
-                return ExtractionProposal.model_validate(response_model.model_validate(merged.model_dump()).model_dump())
+                return typed_proposal(merged, document_type)
             except ExtractionError as error:
                 raise LLMResponseError(str(error)) from None
             except ValidationError as error:
@@ -513,21 +514,21 @@ class AsyncLLMExtractor:
             build_extraction_prompt(document_type), user, ExtractionProposal if previous_proposal is not None else response_model,
             schema, document_type + "_extraction",
         )
-        if previous_proposal is not None:
-            missing = set(repair_fields) - set(parsed.fields)
-            if missing:
-                raise LLMResponseError("В ответе ремонта отсутствуют поля: " + ", ".join(sorted(missing)),
-                                       code="missing_repair_fields")
-            # Даже если шлюз проигнорировал схему и вернул весь документ, менять
-            # разрешена только заданная область. Исходный кандидат не мутируется.
-            try:
-                merged = merge_repair(previous_proposal, parsed, repair_paths if repair_paths is not None else repair_fields)
-                parsed = response_model.model_validate(merged.model_dump())
-            except ExtractionError as error:
-                raise LLMResponseError(str(error)) from None
-            except ValidationError as error:
-                raise LLMResponseError(_validation_feedback(error, schema), code="schema_validation") from None
-        return ExtractionProposal.model_validate(parsed.model_dump())
+        if previous_proposal is None:
+            return ExtractionProposal.model_validate(parsed.model_dump())
+        missing = set(repair_fields) - set(parsed.fields)
+        if missing:
+            raise LLMResponseError("В ответе ремонта отсутствуют поля: " + ", ".join(sorted(missing)),
+                                   code="missing_repair_fields")
+        # Даже если шлюз проигнорировал схему и вернул весь документ, менять
+        # разрешена только заданная область. Исходный кандидат не мутируется.
+        try:
+            merged = merge_repair(previous_proposal, parsed, repair_paths if repair_paths is not None else repair_fields)
+            return typed_proposal(merged, document_type)
+        except ExtractionError as error:
+            raise LLMResponseError(str(error)) from None
+        except ValidationError as error:
+            raise LLMResponseError(_validation_feedback(error, schema), code="schema_validation") from None
 
 
     async def classify(

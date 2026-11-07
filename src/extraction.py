@@ -38,7 +38,6 @@ PROPOSAL_MODELS = {
 }
 
 
-@lru_cache(maxsize=2)
 def get_proposal_model(document_type: SupportedDocumentType) -> type[BaseModel]:
     """Типизированный ответ LLM: набор полей и типы значений из итогового шаблона.
 
@@ -47,6 +46,12 @@ def get_proposal_model(document_type: SupportedDocumentType) -> type[BaseModel]:
     """
 
     return PROPOSAL_MODELS[document_type]
+
+
+def typed_proposal(proposal: BaseModel, document_type: SupportedDocumentType) -> ExtractionProposal:
+    """Проверяет поля по типизированной модели документа и возвращает общий ExtractionProposal."""
+    checked = get_proposal_model(document_type).model_validate(proposal.model_dump())
+    return ExtractionProposal.model_validate(checked.model_dump())
 
 
 def get_proposal_schema(document_type: SupportedDocumentType, *, field_names: list[str] | None = None) -> dict:

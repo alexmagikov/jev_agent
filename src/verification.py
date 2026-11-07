@@ -1,7 +1,7 @@
 """Модель решений проверяет смысл каждого поля против диалога, включая пропуски."""
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from pydantic import BaseModel, JsonValue, RootModel
 
@@ -139,296 +139,439 @@ _STATUS_RULE = (
 )
 
 
-_SEMANTIC_CRITERIA = {
-    "status_wrong": {
+class _Check(NamedTuple):
+    """Вопрос к Jev и критерии ответа «ошибка есть / ошибки нет»."""
+
+    question: str  # {path} — путь проверяемого поля в обратных кавычках
+    criteria: dict[str, str]
+
+    def at(self, path: str) -> _Check:
+        return _Check(self.question.format(path=f"`{path}`"), self.criteria)
+
+
+# Общий критерий для проверок, у которых нет собственного.
+_YES_NO = {
+    "true": "Yes. The specific error in instructions.question is present.",
+    "false": "No. The specific error is absent; unrelated errors do not count.",
+}
+
+
+# Статус проверяется у каждого поля, независимо от его статуса.
+_STATUS_CHECK = _Check(
+    "Does the current status in instructions.field.status for {path} contradict the latest "
+    "applicable user data? Judge status only, not value correctness. missing means no current "
+    "applicable data; invalid means supplied but unusable data; ambiguous means unresolved "
+    "alternatives between usable values or unclear meaning or ownership of supplied data; "
+    "fillable means supported usable data, including "
+    "a justified calculation. Explicit malformed data is not missing. Respect ownership, "
+    "withdrawals, corrections and the supplied field-specific rules.",
+    {
         "true": "The current status is wrong: the latest applicable user data require a different status among fillable, missing, invalid and ambiguous.",
         "false": "The status is justified. A wrong value or citation under the same correct status belongs to another check.",
     },
-    "missing_supported": {
-        "true": "A current unambiguous usable value for this field was omitted.",
-        "false": "No current unambiguous usable value is omitted; null is justified.",
-    },
-    "wrong_role": {
-        "true": "The information in instructions.field.evidence belongs to a different entity or role than this field.",
-        "false": "The cited information concerns the intended entity and role, even if malformed; unrelated details elsewhere in messages do not count.",
-    },
-    "superseded": {
-        "true": "The current null status conflicts with the latest explicit user correction for this field.",
-        "false": "The current null status is still justified, or no correction applies; a historical source change alone is not an error.",
-    },
-    "unresolved_alternatives": {
-        "true": "Actual mutually exclusive usable alternatives remain unresolved; ambiguity was not represented.",
-        "false": "No unresolved choice is misrepresented; absence or bad format alone is not ambiguity.",
-    },
+)
+
+
+# Поле со значением (status=fillable). Порядок ключей — порядок вопросов в запросе.
+_FILLED_CHECKS = {
+    "unsupported": _Check(
+        "Is instructions.field.value for {path} unsupported by its cited user messages "
+        "in instructions.field.evidence? Use instructions.field.meaning and the supplied rules. "
+        "Support may be semantic, use permitted normalization, or follow a justified calculation. "
+        "Check instructions.field.calculation or instructions.field.item_calculations when supplied; "
+        "judge the source operands and operation. The result need not appear verbatim in the messages.",
+        {
+            "true": (
+                "The cited user information does not support instructions.field.value under "
+                "instructions.field.meaning and the supplied rules: neither direct semantic support, "
+                "permitted normalization, nor justified source operands and a calculation support it."
+            ),
+            "false": (
+                "The cited user information supports instructions.field.value in meaning, by permitted "
+                "normalization, or by a justified calculation. The result need not appear verbatim in "
+                "the messages; this does not relax the verbatim requirement for evidence quotes."
+            ),
+        },
+    ),
+    "wrong_role": _Check(
+        "Does the information in instructions.field.evidence used to justify "
+        "instructions.field.value for {path} belong to a different entity or numerical "
+        "role than required by instructions.field.meaning? Use messages to identify "
+        "the owner and role of that specific information, including source operands "
+        "of a calculated value. Other entities' details elsewhere in the dialogue or "
+        "in the same quote do not make a correctly attributed value wrong. "
+        "Flag an actual owner or role mismatch; format errors or missing support alone "
+        "are not this error.",
+        {
+            "true": (
+                "The specific cited information or source operands used to justify "
+                "instructions.field.value belong to a different entity or numerical role "
+                "than required by instructions.field.meaning."
+            ),
+            "false": (
+                "The information used to justify the value concerns the intended entity and role. "
+                "Other entities' details, including a seller's details beside the correct buyer's "
+                "details in the same quote, do not count. Format errors or missing support alone "
+                "are not an owner or role mismatch."
+            ),
+        },
+    ),
+    "superseded": _Check(
+        "Does the proposed value in instructions.field.value for {path} conflict with "
+        "the latest explicit user correction for this field, or remain filled after "
+        "explicit withdrawal? Judge the candidate, not whether any correction occurred. "
+        "If the candidate already reflects the latest correction, answer false. "
+        "Corrections to other fields do not count.",
+        {
+            "true": "The latest explicit user correction requires a different value or withdraws this field's value.",
+            "false": "The candidate already reflects the latest correction, or none applies; a historical correction alone is not an error.",
+        },
+    ),
+    "unresolved_alternatives": _Check(
+        "Does {path} contain a definite value despite unresolved, mutually exclusive "
+        "alternatives in the user's latest applicable messages? "
+        "Resolved choices, permitted equivalent forms, jointly requested values, "
+        "missing information alone and model uncertainty are not this error. "
+        "The expected state is status=ambiguous, value=null, with evidence of the alternatives.",
+        _YES_NO,
+    ),
 }
 
+# Получатель счёта — покупатель; уточнение добавляется к общему вопросу о принадлежности.
+_INVOICE_RECIPIENT_WRONG_ROLE = _Check(
+    _FILLED_CHECKS["wrong_role"].question
+    + " For this invoice, the expected recipient is the buyer/customer being billed; "
+    "account and bank details must refer to that buyer's account or bank.",
+    _FILLED_CHECKS["wrong_role"].criteria,
+)
 
+_ITEMS_ALTERNATIVES = _Check(
+    "Does `items` include an unchosen item or guess an attribute despite unresolved, "
+    "mutually exclusive alternatives in the user's latest applicable messages? "
+    "Resolved choices, permitted equivalent forms, jointly requested values, "
+    "missing information alone and model uncertainty are not this error. "
+    "The expected item selection/status is described in the supplied item-selection rules.",
+    _YES_NO,
+)
+
+_INVOICE_AMOUNT_AMBIGUOUS = _Check(
+    "Does {path} incorrectly claim a definite invoice total when the dialogue "
+    "leaves unit price versus line total unresolved? The presence of this number "
+    "in a source does not establish its numerical role. Apply the shared invoice-request "
+    "convention first: a single unqualified amount attached to the invoice request "
+    "supports the total unless context indicates otherwise; missing quantity alone "
+    "does not make that total ambiguous. If still unresolved, the field "
+    "must have status=ambiguous, value=null and evidence of the ambiguous wording.",
+    _YES_NO,
+)
+
+_NONCANONICAL = _Check(
+    "Does instructions.field.value for {path} violate the explicit canonical-format rule "
+    "supplied in instructions.rules for this field? Judge only that rule; permitted "
+    "normalization and other valid forms are not formatting errors.",
+    {
+        "true": (
+            "instructions.field.value violates an explicit canonical-format rule supplied in "
+            "instructions.rules for this field."
+        ),
+        "false": (
+            "instructions.field.value follows the explicit canonical-format rule, including "
+            "permitted normalization and other valid forms. A different valid form alone is "
+            "not an error; support and ownership are judged separately."
+        ),
+    },
+)
+
+_ITEMS_INCOMPLETE = _Check(
+    "Does `items` omit any active, unambiguously selected whole line item "
+    "requested by the user? Apply later corrections and withdrawals. "
+    "Judge only missing line items; do not assess attributes of items already "
+    "present, including description, quantity, unit or price. Check missing "
+    "attributes only in their separate attribute questions. Unchosen alternatives "
+    "and withdrawn items are not missing line items.",
+    {
+        "true": (
+            "An active, unambiguously selected whole line item requested by the user "
+            "is absent from items after later corrections and withdrawals."
+        ),
+        "false": (
+            "No active, unambiguously selected whole line item is missing. Missing or "
+            "incorrect attributes of items already present belong to separate attribute "
+            "checks. Unchosen alternatives and withdrawn items are not omissions."
+        ),
+    },
+)
+
+
+# Поле без значения (missing, invalid или ambiguous).
+_NULL_CHECKS = {
+    "missing_supported": _Check(
+        "Does the latest user dialogue supply an unambiguous usable value for {path} "
+        "that this null field omits, directly stated or unambiguously computable? "
+        "Require support for this field's meaning and recipient/entity, "
+        "not merely any mentioned value. Unresolved alternatives, withdrawn values and "
+        "malformed source data alone are not a usable omitted value.",
+        {
+            "true": "A current unambiguous usable value for this field was omitted.",
+            "false": "No current unambiguous usable value is omitted; null is justified.",
+        },
+    ),
+    # Задаётся, только если у поля есть цитаты.
+    "wrong_role": _Check(
+        "Do the cited sources in instructions.field.evidence for {path} support information "
+        "belonging to a different person, recipient, bank, document or numerical role than this field? "
+        "Use messages to resolve the owner and role of the cited information. "
+        "Other entities' details elsewhere in the dialogue do not make these citations wrong. "
+        "A malformed value for the correct recipient is not this error.",
+        {
+            "true": "The information in instructions.field.evidence belongs to a different entity or role than this field.",
+            "false": "The cited information concerns the intended entity and role, even if malformed; unrelated details elsewhere in messages do not count.",
+        },
+    ),
+    # Missing after withdrawal is correct; an omitted replacement is already covered by
+    # missing_supported. Only a stale invalid or ambiguous status needs this temporal check.
+    "superseded": _Check(
+        "Does the current null status in instructions.field.status for {path} "
+        "conflict with the latest explicit user correction for this field? "
+        "Judge the final status, not whether the cited information changed. "
+        "Withdrawal without replacement requires missing/null. "
+        "If the latest data still justify invalid/null or ambiguous/null, answer false. "
+        "Corrections to other fields and malformed data alone do not count.",
+        {
+            "true": "The current null status conflicts with the latest explicit user correction for this field.",
+            "false": "The current null status is still justified, or no correction applies; a historical source change alone is not an error.",
+        },
+    ),
+    "unresolved_alternatives": _Check(
+        "Does the latest user dialogue leave mutually exclusive usable alternatives "
+        "for {path} unresolved, requiring ambiguous/null rather than its current status? "
+        "Require actual unchosen alternatives, not absent data, malformed data alone, "
+        "equivalent forms, or model uncertainty.",
+        {
+            "true": "Actual mutually exclusive usable alternatives remain unresolved; ambiguity was not represented.",
+            "false": "No unresolved choice is misrepresented; absence or bad format alone is not ambiguity.",
+        },
+    ),
+}
+
+# Вопрос о пропуске для отдельных полей вместо общего missing_supported.
+_SUBJECT_MISSING = _Check(
+    "Is {path} wrongly left missing although the user explicitly names a "
+    "single billed goods/service category for the current invoice? "
+    "Check the actual billed category in the user's messages, not whether "
+    "a separate purpose sentence exists. Unknown quantity or an unresolved "
+    "price does not remove a named subject. Do not flag this omission if "
+    "only a recipient, amount, contract, or several different goods without "
+    "a stated common purpose are supplied.",
+    _NULL_CHECKS["missing_supported"].criteria,
+)
+
+_VAT_RATE_MISSING = _Check(
+    "Does this null field omit an unambiguous, explicitly stated current VAT "
+    "percentage for this invoice, including an explicit 0%? Do not infer a "
+    "percentage from 'без НДС' (no_vat), tax/base amounts, or calculations. "
+    "Ignore superseded values, quoted instructions, and unrelated percentages.",
+    {
+        "true": "An unambiguous explicit current VAT percentage, including 0%, was omitted.",
+        "false": "No explicit current VAT percentage is omitted; no_vat alone and calculated rates do not count.",
+    },
+)
+
+_INVOICE_AMOUNT_MISSING = _Check(
+    "Is {path} wrongly left missing although an invoice total is explicitly "
+    "stated or an unambiguous sum of all active billed line charges can be "
+    "computed from the user's messages? Check each named line and the role "
+    "of its price. An explicitly assigned charge per named line can support "
+    "the sum even with unknown quantity within that line; a mere unit price "
+    "with unknown quantity cannot. For goods, 'по ... рублей каждый' gives "
+    "unit prices, not whole-line charges. Without a separately stated total, "
+    "missing is correct if any active line lacks both a whole-line charge "
+    "and enough data to calculate it. Never sum unit prices once per product name "
+    "or treat a known subtotal as the invoice total. "
+    "A computed total need not appear verbatim "
+    "in the source. Do not flag if the total requires invented quantities "
+    "or leaves the scope of a charge unresolved.",
+    _NULL_CHECKS["missing_supported"].criteria,
+)
+
+
+# Атрибуты позиций счёта.
+_ITEM_ATTRIBUTE_MISSING = _Check(
+    "Is {path} wrongly left null although user messages unambiguously "
+    "supply this attribute or support its calculation for this single line item? "
+    "Check the attribute's numerical role and association with this item, "
+    "including later corrections. If the attribute is not uniquely supported, "
+    "null is correct. Do not fill it merely because other attributes are known.",
+    _YES_NO,
+)
+
+_ITEM_DESCRIPTION_CHECKS = {
+    "value_wrong": _Check(
+        "Does {path} name a different product/service from every currently requested item "
+        "in the user messages after corrections and withdrawals? Match this single line item to "
+        "one requested item regardless of source order, not to the whole order. "
+        "instructions.field.extracted_items is candidate context, not evidence. "
+        "Judge list completeness only in items::incomplete; other products belong in other lines. "
+        "Judge characteristics in their separate check. "
+        "Singular nominative normalization preserves identity; "
+        "ignore meaning-preserving number/case changes; "
+        "do not judge quantity, unit or price here.",
+        {
+            "true": "The description names a different product/service; none of the currently requested items supports this product identity.",
+            "false": "Same requested product/service as one active requested item, including singular nominative normalization, meaning-preserving number/case changes and permitted quoted-name normalization. Other products may be in other lines; characteristics and unknown quantity/unit/price are separate checks.",
+        },
+    ),
+    "unsupported_characteristics": _Check(
+        "Does {path} contain unsupported characteristics or a changed quoted product name "
+        "for the corresponding requested item after corrections and withdrawals? "
+        "instructions.field.extracted_items is candidate context, not evidence. "
+        "Judge product identity in its separate check and list completeness only in items::incomplete; "
+        "other requested items need not appear in this description. "
+        "Ignore meaning-preserving number/case changes; do not judge quantity, unit or price here.",
+        {
+            "true": "This description adds or changes characteristics or a quoted product name not supported for the corresponding requested item, beyond the permitted quoted-name normalization.",
+            "false": "All stated characteristics and quoted names are supported, or none are stated. Removing external labels and outer quotes under the shared rule is not a name change; inner text, embedded quotes and labels inside the name must remain. Product identity, list completeness, grammatical normalization and unknown quantity/unit/price do not trigger this check.",
+        },
+    ),
+    # Проверки выше игнорируют число и падеж; форму описания проверяем отдельно.
+    "noncanonical": _Check(
+        "Does {path} violate the item-description form rule in instructions.rules: "
+        "is it left in plural or an oblique case although its singular nominative form "
+        "is unambiguous ('стулья' -> 'стул', 'за мониторы' -> 'монитор')? Plural services "
+        "or works without a count stay as written. Judge only the grammatical form, not "
+        "product identity, characteristics, quantity, unit or price.",
+        {
+            "true": "The description is not in singular nominative although that form is unambiguous for this item.",
+            "false": "The description is in singular nominative, or it is a quoted or established name, a plural-only noun (ножницы), plural services or works without a count, or an ambiguous form that stays as written.",
+        },
+    ),
+}
+
+_ITEM_VALUE_WRONG = _Check(
+    "Is {path} incorrect for this single line item? "
+    "Check this attribute individually: its meaning, association with this item, "
+    "latest user correction, and source support. "
+    "Correct attributes of the same or other items do not justify an incorrect one.",
+    _YES_NO,
+)
+
+_ITEM_NUMBER_WRONG = _Check(
+    _ITEM_VALUE_WRONG.question
+    + " For a calculated number, judge the source operands and operation, "
+    "not verbatim result membership.",
+    _YES_NO,
+)
+
+
+# Расчётное значение: два узких вопроса о формуле заменяют общий value_wrong.
 _CALCULATION_CHECKS = {
-    "calculation_operands_wrong": (
+    "calculation_operands_wrong": _Check(
         "Does any cited operand in instructions.field.calculation select unsupported, superseded "
-        "or wrongly attributed source data for `{path}`, whose goal is instructions.field.meaning? "
+        "or wrongly attributed source data for {path}, whose goal is instructions.field.meaning? "
         "Judge source selection only: the numerical role, owning item/entity and latest applicable "
         "user corrections for this calculation. Python checked arithmetic. Do not judge the "
-        "expression's operation here; a calculated result need not appear verbatim in messages."
+        "expression's operation here; a calculated result need not appear verbatim in messages.",
+        {
+            "true": "An operand source is unsupported, superseded or belongs to a different item/entity or numerical role for this specific target.",
+            "false": "All operand sources support the required current roles for this target. Unrelated historical numbers do not invalidate them; the expression's operation is judged separately.",
+        },
     ),
-    "calculation_operation_wrong": (
+    "calculation_operation_wrong": _Check(
         "Does instructions.field.calculation.expression use an operation or grouping that "
-        "contradicts the requested calculation of `{path}`, whose goal is instructions.field.meaning? "
+        "contradicts the requested calculation of {path}, whose goal is instructions.field.meaning? "
         "Judge the expression only, given the operand roles and the user's requested scope, "
         "including any discount or unit conversion. Judge source selection separately; "
-        "Python checked arithmetic. Do not require the calculated result to appear verbatim."
+        "Python checked arithmetic. Do not require the calculated result to appear verbatim.",
+        {
+            "true": "Given the operand roles, the expression's operation or grouping contradicts the requested target or scope under the supplied field rules.",
+            "false": "The expression follows the requested target and scope given the operand roles; a wrong operand source alone is not an operation error. Arithmetic and verbatim result membership are not judged here.",
+        },
     ),
 }
 
-_CALCULATION_CRITERIA = {
-    "calculation_operands_wrong": {
-        "true": "An operand source is unsupported, superseded or belongs to a different item/entity or numerical role for this specific target.",
-        "false": "All operand sources support the required current roles for this target. Unrelated historical numbers do not invalidate them; the expression's operation is judged separately.",
-    },
-    "calculation_operation_wrong": {
-        "true": "Given the operand roles, the expression's operation or grouping contradicts the requested target or scope under the supplied field rules.",
-        "false": "The expression follows the requested target and scope given the operand roles; a wrong operand source alone is not an operation error. Arithmetic and verbatim result membership are not judged here.",
-    },
-}
+
+def _field_checks(name: str, field: dict, invoice: bool) -> dict[str, _Check]:
+    """Проверки одного поля в порядке отправки."""
+    checks = {"status_wrong": _STATUS_CHECK}
+    if field["status"] == "fillable":
+        checks.update(_FILLED_CHECKS)
+        if invoice and name.startswith("recipient_"):
+            checks["wrong_role"] = _INVOICE_RECIPIENT_WRONG_ROLE
+        if name == "items":
+            checks["unresolved_alternatives"] = _ITEMS_ALTERNATIVES
+        if name == "amount_rub" and invoice:
+            checks["ambiguous"] = _INVOICE_AMOUNT_AMBIGUOUS
+        if name in ("recipient_name", "basis_number", "subject"):
+            checks["noncanonical"] = _NONCANONICAL
+        if name == "items":
+            checks["incomplete"] = _ITEMS_INCOMPLETE
+        return checks
+
+    checks["missing_supported"] = _NULL_CHECKS["missing_supported"]
+    if field["evidence"]:
+        checks["wrong_role"] = _NULL_CHECKS["wrong_role"]
+        if field["status"] != "missing":
+            checks["superseded"] = _NULL_CHECKS["superseded"]
+    if field["status"] != "ambiguous":
+        checks["unresolved_alternatives"] = _NULL_CHECKS["unresolved_alternatives"]
+    if name == "subject" and field["status"] == "missing":
+        checks["missing_supported"] = _SUBJECT_MISSING
+    if name == "vat_rate_percent":
+        checks["missing_supported"] = _VAT_RATE_MISSING
+    if name == "amount_rub" and field["status"] == "missing" and invoice:
+        checks["missing_supported"] = _INVOICE_AMOUNT_MISSING
+    return checks
 
 
-def _build_verification_checks(fields: PreparedFields) -> dict[str, str]:
-    """Конкретные вопросы проверок без общих правил верификатора."""
+def _item_attribute_checks(attribute: str, value: object) -> dict[str, _Check]:
+    """Проверки одного атрибута позиции счёта."""
+    if value is None:
+        return {"missing_supported": _ITEM_ATTRIBUTE_MISSING}
+    if attribute == "description":
+        return _ITEM_DESCRIPTION_CHECKS
+    if attribute in ("quantity", "unit_price_rub"):
+        return {"value_wrong": _ITEM_NUMBER_WRONG}
+    return {"value_wrong": _ITEM_VALUE_WRONG}
 
-    questions = {}
-    for name, field in fields.model_dump(mode="json").items():
-        path = f"`{name}`"
-        questions[f"{name}::status_wrong"] = (
-            f"Does the current status in instructions.field.status for {path} contradict the latest "
-            "applicable user data? Judge status only, not value correctness. missing means no current "
-            "applicable data; invalid means supplied but unusable data; ambiguous means unresolved "
-            "alternatives between usable values or unclear meaning or ownership of supplied data; "
-            "fillable means supported usable data, including "
-            "a justified calculation. Explicit malformed data is not missing. Respect ownership, "
-            "withdrawals, corrections and the supplied field-specific rules."
-        )
-        
-        if field["status"] == "fillable":
-            checks = {
-                "unsupported": (
-                    f"Is instructions.field.value for {path} unsupported by its cited user messages "
-                    "in instructions.field.evidence? Use instructions.field.meaning and the supplied rules. "
-                    "Support may be semantic, use permitted normalization, or follow a justified calculation. "
-                    "Check instructions.field.calculation or instructions.field.item_calculations when supplied; "
-                    "judge the source operands and operation. The result need not appear verbatim in the messages."
-                ),
-                "wrong_role": (
-                    f"Does the information in instructions.field.evidence used to justify "
-                    f"instructions.field.value for {path} belong to a different entity or numerical "
-                    "role than required by instructions.field.meaning? Use messages to identify "
-                    "the owner and role of that specific information, including source operands "
-                    "of a calculated value. Other entities' details elsewhere in the dialogue or "
-                    "in the same quote do not make a correctly attributed value wrong. "
-                    "Flag an actual owner or role mismatch; format errors or missing support alone "
-                    "are not this error."
-                ),
-                "superseded": (
-                    f"Does the proposed value in instructions.field.value for {path} conflict with "
-                    "the latest explicit user correction for this field, or remain filled after "
-                    "explicit withdrawal? Judge the candidate, not whether any correction occurred. "
-                    "If the candidate already reflects the latest correction, answer false. "
-                    "Corrections to other fields do not count."
-                ),
-            }
 
-            if "items" in type(fields).model_fields and name.startswith("recipient_"):
-                checks["wrong_role"] += (
-                    " For this invoice, the expected recipient is the buyer/customer being billed; "
-                    "account and bank details must refer to that buyer's account or bank."
-                )
+def _calculation_paths(prepared: dict, proposal: ExtractionProposal | None) -> list[str]:
+    """Пути заполненных значений, которые LLM предложила вычислить формулой."""
+    if proposal is None:
+        return []
+    paths = []
+    for name, field in proposal.fields.items():
+        if prepared[name]["status"] != "fillable":
+            continue
+        if field.calculation is not None:
+            paths.append(name)
+        if name == "items" and isinstance(field.value, list):
+            for index, item in enumerate(field.value):
+                for attribute, plan_name in (("quantity", "quantity_calculation"),
+                                             ("unit_price_rub", "unit_price_calculation")):
+                    if getattr(item, plan_name) is not None:
+                        paths.append(f"items[{index}].{attribute}")
+    return paths
 
-            if name == "items":
-                alternative_question = (
-                    "Does `items` include an unchosen item or guess an attribute despite unresolved, "
-                    "mutually exclusive alternatives in the user's latest applicable messages? "
-                )
-                expected_state = (
-                    "The expected item selection/status is described in the supplied item-selection rules."
-                )
-            else:
-                alternative_question = (
-                    f"Does {path} contain a definite value despite unresolved, mutually exclusive "
-                    "alternatives in the user's latest applicable messages? "
-                )
-                expected_state = (
-                    "The expected state is status=ambiguous, value=null, with evidence of the alternatives."
-                )
-                
-            checks["unresolved_alternatives"] = (
-                alternative_question
-                + "Resolved choices, permitted equivalent forms, jointly requested values, "
-                "missing information alone and model uncertainty are not this error. "
-                + expected_state
-            )
 
-            if name == "amount_rub" and "items" in type(fields).model_fields:
-                checks["ambiguous"] = (
-                    f"Does {path} incorrectly claim a definite invoice total when the dialogue "
-                    "leaves unit price versus line total unresolved? The presence of this number "
-                    "in a source does not establish its numerical role. Apply the shared invoice-request "
-                    "convention first: a single unqualified amount attached to the invoice request "
-                    "supports the total unless context indicates otherwise; missing quantity alone "
-                    "does not make that total ambiguous. If still unresolved, the field "
-                    "must have status=ambiguous, value=null and evidence of the ambiguous wording."
-                )
-
-            if name in ("recipient_name", "basis_number", "subject"):
-                checks["noncanonical"] = (
-                    f"Does instructions.field.value for {path} violate the explicit canonical-format rule "
-                    "supplied in instructions.rules for this field? Judge only that rule; permitted "
-                    "normalization and other valid forms are not formatting errors."
-                )
-
-            if name == "items":
-                checks["incomplete"] = (
-                    "Does `items` omit any active, unambiguously selected whole line item "
-                    "requested by the user? Apply later corrections and withdrawals. "
-                    "Judge only missing line items; do not assess attributes of items already "
-                    "present, including description, quantity, unit or price. Check missing "
-                    "attributes only in their separate attribute questions. Unchosen alternatives "
-                    "and withdrawn items are not missing line items."
-                )
-            
-        else:
-            checks = {
-                "missing_supported": (
-                    f"Does the latest user dialogue supply an unambiguous usable value for {path} "
-                    "that this null field omits, directly stated or unambiguously computable? "
-                    "Require support for this field's meaning and recipient/entity, "
-                    "not merely any mentioned value. Unresolved alternatives, withdrawn values and "
-                    "malformed source data alone are not a usable omitted value."
-                ),
-            }
-            
-            if field["evidence"]:
-                checks["wrong_role"] = (
-                    f"Do the cited sources in instructions.field.evidence for {path} support information "
-                    "belonging to a different person, recipient, bank, document or numerical role than this field? "
-                    "Use messages to resolve the owner and role of the cited information. "
-                    "Other entities' details elsewhere in the dialogue do not make these citations wrong. "
-                    "A malformed value for the correct recipient is not this error."
-                )
-                # Missing after withdrawal is correct; an omitted replacement is
-                # already covered by missing_supported. Only a stale invalid or
-                # ambiguous status needs this additional temporal check.
-                if field["status"] != "missing":
-                    checks["superseded"] = (
-                        f"Does the current null status in instructions.field.status for {path} "
-                        "conflict with the latest explicit user correction for this field? "
-                        "Judge the final status, not whether the cited information changed. "
-                        "Withdrawal without replacement requires missing/null. "
-                        "If the latest data still justify invalid/null or ambiguous/null, answer false. "
-                        "Corrections to other fields and malformed data alone do not count."
-                    )
-                
-            if field["status"] != "ambiguous":
-                checks["unresolved_alternatives"] = (
-                    f"Does the latest user dialogue leave mutually exclusive usable alternatives "
-                    f"for {path} unresolved, requiring ambiguous/null rather than its current status? "
-                    "Require actual unchosen alternatives, not absent data, malformed data alone, "
-                    "equivalent forms, or model uncertainty."
-                )
-                
-            if name == "subject" and field["status"] == "missing":
-                checks["missing_supported"] = (
-                    f"Is {path} wrongly left missing although the user explicitly names a "
-                    "single billed goods/service category for the current invoice? "
-                    "Check the actual billed category in the user's messages, not whether "
-                    "a separate purpose sentence exists. Unknown quantity or an unresolved "
-                    "price does not remove a named subject. Do not flag this omission if "
-                    "only a recipient, amount, contract, or several different goods without "
-                    "a stated common purpose are supplied."
-                )
-
-            if name == "vat_rate_percent":
-                checks["missing_supported"] = (
-                    "Does this null field omit an unambiguous, explicitly stated current VAT "
-                    "percentage for this invoice, including an explicit 0%? Do not infer a "
-                    "percentage from 'без НДС' (no_vat), tax/base amounts, or calculations. "
-                    "Ignore superseded values, quoted instructions, and unrelated percentages."
-                )
-                
-            if name == "amount_rub" and field["status"] == "missing" and "items" in type(fields).model_fields:
-                checks["missing_supported"] = (
-                    f"Is {path} wrongly left missing although an invoice total is explicitly "
-                    "stated or an unambiguous sum of all active billed line charges can be "
-                    "computed from the user's messages? Check each named line and the role "
-                    "of its price. An explicitly assigned charge per named line can support "
-                    "the sum even with unknown quantity within that line; a mere unit price "
-                    "with unknown quantity cannot. For goods, 'по ... рублей каждый' gives "
-                    "unit prices, not whole-line charges. Without a separately stated total, "
-                    "missing is correct if any active line lacks both a whole-line charge "
-                    "and enough data to calculate it. Never sum unit prices once per product name "
-                    "or treat a known subtotal as the invoice total. "
-                    "A computed total need not appear verbatim "
-                    "in the source. Do not flag if the total requires invented quantities "
-                    "or leaves the scope of a charge unresolved."
-                )
-
-        for check, question in checks.items():
-            questions[f"{name}::{check}"] = question
-
+def _build_verification_checks(
+    prepared: dict, proposal: ExtractionProposal | None, *, invoice: bool,
+) -> dict[str, _Check]:
+    """Все вопросы к Jev в порядке отправки: «путь::проверка» → вопрос и критерии."""
+    checks = {}
+    for name, field in prepared.items():
+        for check, spec in _field_checks(name, field, invoice).items():
+            checks[f"{name}::{check}"] = spec.at(name)
         if name == "items" and field["status"] == "fillable":
             for index, item in enumerate(field["value"]):
                 for attribute, value in item.items():
-                    path = f"`items[{index}].{attribute}`"
-                    if value is None:
-                        questions[f"items[{index}].{attribute}::missing_supported"] = (
-                            f"Is {path} wrongly left null although user messages unambiguously "
-                            "supply this attribute or support its calculation for this single line item? "
-                            "Check the attribute's numerical role and association with this item, "
-                            "including later corrections. If the attribute is not uniquely supported, "
-                            "null is correct. Do not fill it merely because other attributes are known."
-                        )
-                        continue
-                    if attribute == "description":
-                        questions[f"items[{index}].{attribute}::value_wrong"] = (
-                            f"Does {path} name a different product/service from every currently requested item "
-                            "in the user messages after corrections and withdrawals? Match this single line item to "
-                            "one requested item regardless of source order, not to the whole order. "
-                            "instructions.field.extracted_items is candidate context, not evidence. "
-                            "Judge list completeness only in items::incomplete; other products belong in other lines. "
-                            "Judge characteristics in their separate check. "
-                            "Singular nominative normalization preserves identity; "
-                            "ignore meaning-preserving number/case changes; "
-                            "do not judge quantity, unit or price here."
-                        )
-                        questions[f"items[{index}].{attribute}::unsupported_characteristics"] = (
-                            f"Does {path} contain unsupported characteristics or a changed quoted product name "
-                            "for the corresponding requested item after corrections and withdrawals? "
-                            "instructions.field.extracted_items is candidate context, not evidence. "
-                            "Judge product identity in its separate check and list completeness only in items::incomplete; "
-                            "other requested items need not appear in this description. "
-                            "Ignore meaning-preserving number/case changes; do not judge quantity, unit or price here."
-                        )
-                        # Проверки выше игнорируют число и падеж; форму описания проверяем отдельно.
-                        questions[f"items[{index}].{attribute}::noncanonical"] = (
-                            f"Does {path} violate the item-description form rule in instructions.rules: "
-                            "is it left in plural or an oblique case although its singular nominative form "
-                            "is unambiguous ('стулья' -> 'стул', 'за мониторы' -> 'монитор')? Plural services "
-                            "or works without a count stay as written. Judge only the grammatical form, not "
-                            "product identity, characteristics, quantity, unit or price."
-                        )
-                        continue
-
-                    questions[f"items[{index}].{attribute}::value_wrong"] = (
-                        f"Is {path} incorrect for this single line item? "
-                        "Check this attribute individually: its meaning, association with this item, "
-                        "latest user correction, and source support. "
-                        "Correct attributes of the same or other items do not justify an incorrect one."
-                    )
-                    if attribute in ("quantity", "unit_price_rub"):
-                        questions[f"items[{index}].{attribute}::value_wrong"] += (
-                            " For a calculated number, judge the source operands and operation, "
-                            "not verbatim result membership."
-                        )
-
-    return questions
+                    path = f"items[{index}].{attribute}"
+                    for check, spec in _item_attribute_checks(attribute, value).items():
+                        checks[f"{path}::{check}"] = spec.at(path)
+    for path in _calculation_paths(prepared, proposal):
+        checks.pop(f"{path}::value_wrong", None)
+        for check, spec in _CALCULATION_CHECKS.items():
+            checks[f"{path}::{check}"] = spec.at(path)
+    return checks
 
 
 def build_verification_questions(
@@ -461,27 +604,10 @@ def build_verification_questions(
         if messages is not None and field["status"] != "fillable"
     }
 
-    checks = _build_verification_checks(fields)
-    if proposal is not None:
-        calculation_paths = []
-        for name, field in proposal.fields.items():
-            if prepared[name]["status"] != "fillable":
-                continue
-            if field.calculation is not None:
-                calculation_paths.append(name)
-            if name == "items" and isinstance(field.value, list):
-                for index, item in enumerate(field.value):
-                    for attribute in ("quantity", "unit_price_rub"):
-                        plan_name = "quantity_calculation" if attribute == "quantity" else "unit_price_calculation"
-                        if getattr(item, plan_name) is not None:
-                            calculation_paths.append(f"items[{index}].{attribute}")
-        for path in calculation_paths:
-            # Для расчётного атрибута два узких вопроса заменяют общий value_wrong.
-            checks.pop(f"{path}::value_wrong", None)
-            for kind, text in _CALCULATION_CHECKS.items():
-                checks[f"{path}::{kind}"] = text.format(path=path)
+    invoice = document_type == "invoice_draft"
+    checks = _build_verification_checks(prepared, proposal, invoice=invoice)
 
-    for key, question in checks.items():
+    for key, spec in checks.items():
         path, check = parse_check_key(key)
         name = field_root(path)
         source_candidates = candidates.get(name)
@@ -493,7 +619,7 @@ def build_verification_questions(
 
         item_rules = _ITEMS_RULES if name == "items" else ""
         semantic_rule = ""
-        if "items" in type(fields).model_fields:
+        if invoice:
             semantic_rule = {"amount_rub": INVOICE_AMOUNT_RULE,
                              "subject": INVOICE_SUBJECT_RULE, "items": ITEM_UNIT_RULE}.get(name, "")
         if path.startswith("items["):
@@ -538,106 +664,18 @@ def build_verification_questions(
                 for item in raw["value"]
             ]
 
-        criteria = _SEMANTIC_CRITERIA[check] if current["status"] != "fillable" or check == "status_wrong" else {
-            "true": "Yes. The specific error in instructions.question is present.",
-            "false": "No. The specific error is absent; unrelated errors do not count.",
-        }
-
-        if check == "unsupported":
-            criteria = {
-                "true": (
-                    "The cited user information does not support instructions.field.value under "
-                    "instructions.field.meaning and the supplied rules: neither direct semantic support, "
-                    "permitted normalization, nor justified source operands and a calculation support it."
-                ),
-                "false": (
-                    "The cited user information supports instructions.field.value in meaning, by permitted "
-                    "normalization, or by a justified calculation. The result need not appear verbatim in "
-                    "the messages; this does not relax the verbatim requirement for evidence quotes."
-                ),
-            }
-        if check == "noncanonical":
-            criteria = {
-                "true": (
-                    "instructions.field.value violates an explicit canonical-format rule supplied in "
-                    "instructions.rules for this field."
-                ),
-                "false": (
-                    "instructions.field.value follows the explicit canonical-format rule, including "
-                    "permitted normalization and other valid forms. A different valid form alone is "
-                    "not an error; support and ownership are judged separately."
-                ),
-            }
-
-        if key == "items::incomplete":
-            criteria = {
-                "true": (
-                    "An active, unambiguously selected whole line item requested by the user "
-                    "is absent from items after later corrections and withdrawals."
-                ),
-                "false": (
-                    "No active, unambiguously selected whole line item is missing. Missing or "
-                    "incorrect attributes of items already present belong to separate attribute "
-                    "checks. Unchosen alternatives and withdrawn items are not omissions."
-                ),
-            }
-
-        if check == "wrong_role" and current["status"] == "fillable":
-            criteria = {
-                "true": (
-                    "The specific cited information or source operands used to justify "
-                    "instructions.field.value belong to a different entity or numerical role "
-                    "than required by instructions.field.meaning."
-                ),
-                "false": (
-                    "The information used to justify the value concerns the intended entity and role. "
-                    "Other entities' details, including a seller's details beside the correct buyer's "
-                    "details in the same quote, do not count. Format errors or missing support alone "
-                    "are not an owner or role mismatch."
-                ),
-            }
-
-        if check in _CALCULATION_CRITERIA:
-            criteria = _CALCULATION_CRITERIA[check]
-        
-        if path.endswith("].description") and check == "value_wrong":
-            criteria = {
-                "true": "The description names a different product/service; none of the currently requested items supports this product identity.",
-                "false": "Same requested product/service as one active requested item, including singular nominative normalization, meaning-preserving number/case changes and permitted quoted-name normalization. Other products may be in other lines; characteristics and unknown quantity/unit/price are separate checks.",
-            }
-        if path.endswith("].description") and check == "unsupported_characteristics":
-            criteria = {
-                "true": "This description adds or changes characteristics or a quoted product name not supported for the corresponding requested item, beyond the permitted quoted-name normalization.",
-                "false": "All stated characteristics and quoted names are supported, or none are stated. Removing external labels and outer quotes under the shared rule is not a name change; inner text, embedded quotes and labels inside the name must remain. Product identity, list completeness, grammatical normalization and unknown quantity/unit/price do not trigger this check.",
-            }
-        if path.endswith("].description") and check == "noncanonical":
-            criteria = {
-                "true": "The description is not in singular nominative although that form is unambiguous for this item.",
-                "false": "The description is in singular nominative, or it is a quoted or established name, a plural-only noun (ножницы), plural services or works without a count, or an ambiguous form that stays as written.",
-            }
-        if check == "superseded" and current["status"] == "fillable":
-            criteria = {
-                "true": "The latest explicit user correction requires a different value or withdraws this field's value.",
-                "false": "The candidate already reflects the latest correction, or none applies; a historical correction alone is not an error.",
-            }
-        if key == "vat_rate_percent::missing_supported":
-            criteria = {
-                "true": "An unambiguous explicit current VAT percentage, including 0%, was omitted.",
-                "false": "No explicit current VAT percentage is omitted; no_vat alone and calculated rates do not count.",
-            }
-
         checks_quoted_name = name == "subject" or (
             name == "items" and (path == "items" or path.endswith("].description"))
         )
         quoted_name_rule = QUOTED_PRODUCT_NAME_RULE if checks_quoted_name else ""
         questions[key] = NoulQuestion(
-            instructions={"question": question, "field": claim, "rules": [part for part in
+            instructions={"question": spec.question, "field": claim, "rules": [part for part in
                           (_FIELD_RULES.get(name), VAT_MODE_RULE if name == "vat_rate_percent" else "",
                            DESTINATION_BANK_RULE if name == "destination_bank" else "",
                            item_rules, semantic_rule, quoted_name_rule,
                            _STATUS_RULE if format_check is not None and current["status"] != "fillable"
                            and check != "status_wrong" else "") if part]},
-            criteria=criteria,
+            criteria=spec.criteria,
         )
         
     return VerificationQuestions(questions)
