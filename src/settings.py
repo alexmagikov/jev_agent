@@ -37,62 +37,6 @@ class DecisionModelSettings(BaseSettings):
         return _validate_base_url(value, "DECISION_BASE_URL")
 
 
-class JeffSettings(BaseSettings):
-    """Подключение к jeff-serve; не связано с ключами Jev или CLM."""
-
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
-
-    base_url: str = Field(default="http://127.0.0.1:8765", validation_alias="JEFF_BASE_URL")
-    model: str = Field(default="jeff-latest", min_length=1, validation_alias="JEFF_MODEL")
-    api_key: SecretStr | None = Field(default=None, min_length=1, validation_alias="JEFF_API_KEY")
-    timeout_seconds: float = Field(default=120, gt=0, le=600, validation_alias="JEFF_TIMEOUT_SECONDS")
-    max_retries: int = Field(default=0, ge=0, le=5, validation_alias="JEFF_MAX_RETRIES")
-    wrong_threshold: float = Field(default=0.8, gt=0, lt=1, validation_alias="JEFF_WRONG_THRESHOLD")
-
-    @field_validator("base_url")
-    @classmethod
-    def validate_base_url(cls, value: str) -> str:
-        return _validate_base_url(value, "JEFF_BASE_URL")
-
-
-class CLMSettings(BaseSettings):
-    """Подключение к собственному clm-serve, отдельно от генеративной LLM."""
-
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
-
-    base_url: str = Field(default="http://127.0.0.1:8700", validation_alias="CLM_BASE_URL")
-    model: str = Field(default="clm-latest", min_length=1, validation_alias="CLM_MODEL")
-    api_key: SecretStr | None = Field(default=None, min_length=1, validation_alias="CLM_API_KEY")
-    timeout_seconds: float = Field(default=120, gt=0, le=600, validation_alias="CLM_TIMEOUT_SECONDS")
-    max_retries: int = Field(default=0, ge=0, le=5, validation_alias="CLM_MAX_RETRIES")
-    wrong_threshold: float = Field(default=0.8, gt=0, lt=1, validation_alias="CLM_WRONG_THRESHOLD")
-
-    @field_validator("base_url")
-    @classmethod
-    def validate_base_url(cls, value: str) -> str:
-        return _validate_base_url(value, "CLM_BASE_URL")
-
-
-class LayaSettings(BaseSettings):
-    """Отдельный laya-serve; multilingual выбирается явно, без автороутинга."""
-
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
-
-    base_url: str = Field(default="http://127.0.0.1:8770", validation_alias="LAYA_BASE_URL")
-    model: str = Field(default="multilingual", min_length=1, validation_alias="LAYA_MODEL")
-    api_key: SecretStr | None = Field(default=None, min_length=1, validation_alias="LAYA_API_KEY")
-    timeout_seconds: float = Field(default=120, gt=0, le=600, validation_alias="LAYA_TIMEOUT_SECONDS")
-    max_retries: int = Field(default=0, ge=0, le=5, validation_alias="LAYA_MAX_RETRIES")
-    wrong_threshold: float = Field(default=0.8, gt=0, lt=1, validation_alias="LAYA_WRONG_THRESHOLD")
-    max_len: int = Field(default=8192, ge=1, le=8192, validation_alias="LAYA_MAX_LEN")
-    head_max_len: int = Field(default=2048, ge=1, le=8192, validation_alias="LAYA_HEAD_MAX_LEN")
-
-    @field_validator("base_url")
-    @classmethod
-    def validate_base_url(cls, value: str) -> str:
-        return _validate_base_url(value, "LAYA_BASE_URL")
-
-
 class LLMSettings(BaseSettings):
     """Настройки полного режима. Имя модели выбирается явно, а не скрытым default."""
 

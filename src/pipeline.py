@@ -19,10 +19,14 @@ from src.schemas.document_schemas import (
     InvoiceResult,
     NoDocumentResult,
     TransferResult,
+    field_root,
 )
-from src.extraction import ExtractionError, ExtractionProposal, PreparedFields, prepare_fields, prepare_partial_fields, validate_messages
+from src.extraction import (
+    ExtractionError, ExtractionProposal, PreparedFields, amount_depends_on_unverified_items, dependent_amount_issue,
+    prepare_fields, prepare_partial_fields, validate_messages,
+)
 from src.llm import AsyncLLMExtractor, LLMError, LLMRateLimitError, LLMResponseError
-from src.verification import VerificationError, verify_fields
+from src.verification import Remark, VerificationError, verify_fields
 from src.repairs import merge_repair, plan_repair, repair_roots
 
 
@@ -195,7 +199,7 @@ async def process_selected_document(
     validation_failures = []
     failure_reason = "semantic_rejection"
     # Кандидат, его поля после Python (None — не прошёл) и замечания верификатора.
-    candidates: list[tuple[ExtractionProposal, PreparedFields | None, list[str]]] = []
+    candidates: list[tuple[ExtractionProposal, PreparedFields | None, list[Remark]]] = []
     response_issues: list[ValidationIssue] = []
 
     for attempt in range(1, max_attempts + 1):
@@ -256,7 +260,7 @@ async def process_selected_document(
         except LLMError as error:
             raise PipelineError(f"{case_id}: {error}") from error
         
-        feedback = []
+        remarks: list[Remark] = []
         failure_reason = "semantic_rejection"
         if use_verifier:
             assert client is not None
@@ -264,8 +268,8 @@ async def process_selected_document(
                 if debug:
                     print(f"[{case_id}] {getattr(client, 'name', 'Decision model')}: проверка полей…", flush=True)
 
-                feedback = await verify_fields(
-                    messages, 
+                remarks = await verify_fields(
+                    messages,
                     decision.document_type,
                     proposal,
                     fields,
@@ -280,12 +284,13 @@ async def process_selected_document(
 
             if debug:
                 print(f"[{case_id}] Замечания {getattr(client, 'name', 'Decision model')}:", flush=True)
-                for remark in feedback:
-                    print("  " + remark, flush=True)
-                if not feedback:
+                for remark in remarks:
+                    print(f"  {remark}", flush=True)
+                if not remarks:
                     print("  нет", flush=True)
 
-        if not feedback:
+        feedback = [str(remark) for remark in remarks]
+        if not remarks:
             result_model = InvoiceResult if decision.document_type == "invoice_draft" else TransferResult
             return result_model(
                 case_id=case_id, document_type=decision.document_type,
@@ -293,9 +298,9 @@ async def process_selected_document(
                 validation=DocumentValidation(semantic_status="passed" if use_verifier else "not_run"),
             )
         
-        candidates.append((proposal.model_copy(deep=True), fields.model_copy(deep=True), feedback.copy()))
+        candidates.append((proposal.model_copy(deep=True), fields.model_copy(deep=True), list(remarks)))
         try:
-            repair_paths = plan_repair(proposal, [remark.split("::", 1)[0] for remark in feedback])
+            repair_paths = plan_repair(proposal, [remark.path for remark in remarks])
         except ValueError as error:
             raise PipelineError(f"{case_id}: проверка вернула неизвестное поле для исправления") from error
         repair_fields = repair_roots(repair_paths)
@@ -331,7 +336,7 @@ async def process_selected_document(
 def _review_candidate(
     proposal: ExtractionProposal,
     checked_fields: PreparedFields | None,
-    remarks: list[str],
+    remarks: list[Remark],
     messages: list[DocumentMessage],
     document_type: str,
 ) -> tuple[PreparedFields, DocumentValidation] | None:
@@ -345,12 +350,14 @@ def _review_candidate(
     fields = checked_fields.model_copy(deep=True)
     validation = DocumentValidation(semantic_status="needs_review" if remarks else "not_run")
     for remark in remarks:
-        key = remark.split(": ", 1)[0]
-        path, code = key.split("::", 1)
         validation.issues.append(ValidationIssue(
-            path=path, stage="semantic", code=code, message=remark,
+            path=remark.path, stage="semantic", code=remark.check, message=str(remark),
         ))
-        name = repair_roots([path])[0]
+        name = field_root(remark.path)
         getattr(fields, name).validation_status = "needs_review"
         validation.unverified_fields[name] = proposal.fields[name].model_dump(mode="json")
+    if amount_depends_on_unverified_items(proposal, set(validation.unverified_fields)):
+        validation.issues.append(dependent_amount_issue("semantic"))
+        fields.amount_rub.validation_status = "needs_review"
+        validation.unverified_fields["amount_rub"] = proposal.fields["amount_rub"].model_dump(mode="json")
     return fields, validation

@@ -12,6 +12,11 @@ type Number = Annotated[float, Field(strict=True, allow_inf_nan=False)]
 type MessageId = Annotated[str, Field(min_length=1)]
 
 
+def field_root(path: str) -> str:
+    """Поле шаблона, к которому относится путь: items[0].quantity → items."""
+    return path.split("[", 1)[0].split(".", 1)[0]
+
+
 def validate_iso_date(value: str) -> str:
     date.fromisoformat(value)
     return value
@@ -118,7 +123,7 @@ class ResultBase(DocumentSchema):
         if marked and (report is None or report.status != "needs_review"):
             raise ValueError("Непроверенные поля требуют validation.status=needs_review")
         if report is not None:
-            roots = {issue.path.split(".", 1)[0].split("[", 1)[0] for issue in report.issues if issue.path}
+            roots = {field_root(issue.path) for issue in report.issues if issue.path}
             if not marked <= roots:
                 raise ValueError("Для каждого непроверенного поля требуется замечание")
             if (report.status == "passed") != (not report.issues):

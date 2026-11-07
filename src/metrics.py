@@ -42,16 +42,6 @@ class FieldMetrics(BaseModel):
     field_accuracy: float | None
     status_confusion: dict[str, dict[str, int]]
 
-    @property
-    def evidence_accuracy(self) -> float | None:
-        """Старое Python-имя; в JSON используется evidence_id_exact_match."""
-        return self.evidence_id_exact_match
-
-    @property
-    def unsupported_fill_rate(self) -> float | None:
-        """Старое Python-имя; это доля лишних заполнений, а не оценка доказательств."""
-        return self.overfill_rate
-
 
 class DocumentTypeMismatch(BaseModel):
     """Несовпадение типа; predicted=None означает отсутствие предсказания."""

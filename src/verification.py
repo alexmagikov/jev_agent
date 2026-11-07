@@ -1,5 +1,6 @@
 """Модель решений проверяет смысл каждого поля против диалога, включая пропуски."""
 
+from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, JsonValue, RootModel
@@ -16,11 +17,34 @@ from src.field_rules import (
     ITEMS_PRESENCE_RULE, ITEMS_SELECTION_RULE, ITEMS_EXAMPLES, RECIPIENT_NAME_RULE, BASIS_NUMBER_RULE,
     VAT_MODE_RULE, VAT_RATE_RULE, QUOTED_PRODUCT_NAME_RULE, BASIS_DATE_RULE, DESTINATION_BANK_RULE,
 )
+from src.schemas.document_schemas import field_root
 from src.schemas.schemas import Probability
 
 
 class VerificationError(RuntimeError):
     """Ответ верификатора не содержит ожидаемый набор проверок."""
+
+
+def parse_check_key(key: str) -> tuple[str, str]:
+    """Имя вопроса к Jev «путь::проверка» → (путь, проверка): items[0].quantity::value_wrong."""
+    path, check = key.split("::", 1)
+    return path, check
+
+
+@dataclass(frozen=True)
+class Remark:
+    """Сработавшая проверка Jev: какое поле, какая проверка, оценка и текст вопроса."""
+
+    path: str
+    check: str
+    score: float
+    verifier: str
+    question: str
+
+    def __str__(self) -> str:
+        # Этот текст уходит LLM в feedback ремонта и в ValidationIssue.message.
+        return (f"{self.path}::{self.check}: {self.verifier} обнаружил возможную ошибку "
+                f"({self.score:.2f}). {self.question}")
 
 
 class NoulQuestion(BaseModel):
@@ -458,12 +482,13 @@ def build_verification_questions(
                 checks[f"{path}::{kind}"] = text.format(path=path)
 
     for key, question in checks.items():
-        name = key.split("::", 1)[0].split("[", 1)[0]
+        path, check = parse_check_key(key)
+        name = field_root(path)
         source_candidates = candidates.get(name)
         if source_candidates is not None:
-            if key.endswith("::missing_supported") and not source_candidates:
+            if check == "missing_supported" and not source_candidates:
                 continue 
-            if key.endswith("::unresolved_alternatives") and len({c["quote"] for c in source_candidates}) < 2:
+            if check == "unresolved_alternatives" and len({c["quote"] for c in source_candidates}) < 2:
                 continue
 
         item_rules = _ITEMS_RULES if name == "items" else ""
@@ -471,14 +496,13 @@ def build_verification_questions(
         if "items" in type(fields).model_fields:
             semantic_rule = {"amount_rub": INVOICE_AMOUNT_RULE,
                              "subject": INVOICE_SUBJECT_RULE, "items": ITEM_UNIT_RULE}.get(name, "")
-        if key.startswith("items["):
-            attribute = key.split("::", 1)[0].rsplit(".", 1)[-1]
+        if path.startswith("items["):
+            attribute = path.rsplit(".", 1)[-1]
             item_rules = attribute_rules[attribute]
-            if attribute == "description" and key.endswith("::noncanonical"):
+            if attribute == "description" and check == "noncanonical":
                 item_rules = ITEM_DESCRIPTION_RULE  # правило формы, а не «форма не важна»
             semantic_rule = ""
 
-        path = key.split("::", 1)[0]
         current = prepared[name]
         raw = proposal.fields[name].model_dump(mode="json") if proposal is not None else None
         claim = {
@@ -490,10 +514,10 @@ def build_verification_questions(
         }
 
         format_check = requisite_format_context(name, raw["value"] if raw is not None else None)
-        if format_check is not None and (current["status"] == "fillable" or key.endswith("::status_wrong")):
+        if format_check is not None and (current["status"] == "fillable" or check == "status_wrong"):
             claim["format_check"] = format_check
         
-        if source_candidates is not None and key.endswith(("::missing_supported", "::unresolved_alternatives")):
+        if source_candidates is not None and check in ("missing_supported", "unresolved_alternatives"):
             claim["valid_source_candidates"] = source_candidates
         
         if path.startswith("items["):
@@ -510,16 +534,16 @@ def build_verification_questions(
             claim.pop("derivation")
         elif name == "items" and raw is not None and isinstance(raw["value"], list):
             claim["item_calculations"] = [
-                {key: item[key] for key in ("quantity_calculation", "unit_price_calculation")}
+                {plan_name: item[plan_name] for plan_name in ("quantity_calculation", "unit_price_calculation")}
                 for item in raw["value"]
             ]
 
-        criteria = _SEMANTIC_CRITERIA[key.split("::", 1)[1]] if current["status"] != "fillable" or key.endswith("::status_wrong") else {
+        criteria = _SEMANTIC_CRITERIA[check] if current["status"] != "fillable" or check == "status_wrong" else {
             "true": "Yes. The specific error in instructions.question is present.",
             "false": "No. The specific error is absent; unrelated errors do not count.",
         }
 
-        if key.endswith("::unsupported"):
+        if check == "unsupported":
             criteria = {
                 "true": (
                     "The cited user information does not support instructions.field.value under "
@@ -532,7 +556,7 @@ def build_verification_questions(
                     "the messages; this does not relax the verbatim requirement for evidence quotes."
                 ),
             }
-        if key.endswith("::noncanonical"):
+        if check == "noncanonical":
             criteria = {
                 "true": (
                     "instructions.field.value violates an explicit canonical-format rule supplied in "
@@ -558,7 +582,7 @@ def build_verification_questions(
                 ),
             }
 
-        if key.endswith("::wrong_role") and current["status"] == "fillable":
+        if check == "wrong_role" and current["status"] == "fillable":
             criteria = {
                 "true": (
                     "The specific cited information or source operands used to justify "
@@ -573,26 +597,25 @@ def build_verification_questions(
                 ),
             }
 
-        calculation_kind = key.split("::", 1)[1]
-        if calculation_kind in _CALCULATION_CRITERIA:
-            criteria = _CALCULATION_CRITERIA[calculation_kind]
+        if check in _CALCULATION_CRITERIA:
+            criteria = _CALCULATION_CRITERIA[check]
         
-        if path.endswith("].description") and key.endswith("::value_wrong"):
+        if path.endswith("].description") and check == "value_wrong":
             criteria = {
                 "true": "The description names a different product/service; none of the currently requested items supports this product identity.",
                 "false": "Same requested product/service as one active requested item, including singular nominative normalization, meaning-preserving number/case changes and permitted quoted-name normalization. Other products may be in other lines; characteristics and unknown quantity/unit/price are separate checks.",
             }
-        if path.endswith("].description") and key.endswith("::unsupported_characteristics"):
+        if path.endswith("].description") and check == "unsupported_characteristics":
             criteria = {
                 "true": "This description adds or changes characteristics or a quoted product name not supported for the corresponding requested item, beyond the permitted quoted-name normalization.",
                 "false": "All stated characteristics and quoted names are supported, or none are stated. Removing external labels and outer quotes under the shared rule is not a name change; inner text, embedded quotes and labels inside the name must remain. Product identity, list completeness, grammatical normalization and unknown quantity/unit/price do not trigger this check.",
             }
-        if path.endswith("].description") and key.endswith("::noncanonical"):
+        if path.endswith("].description") and check == "noncanonical":
             criteria = {
                 "true": "The description is not in singular nominative although that form is unambiguous for this item.",
                 "false": "The description is in singular nominative, or it is a quoted or established name, a plural-only noun (ножницы), plural services or works without a count, or an ambiguous form that stays as written.",
             }
-        if key.endswith("::superseded") and current["status"] == "fillable":
+        if check == "superseded" and current["status"] == "fillable":
             criteria = {
                 "true": "The latest explicit user correction requires a different value or withdraws this field's value.",
                 "false": "The candidate already reflects the latest correction, or none applies; a historical correction alone is not an error.",
@@ -613,7 +636,7 @@ def build_verification_questions(
                            DESTINATION_BANK_RULE if name == "destination_bank" else "",
                            item_rules, semantic_rule, quoted_name_rule,
                            _STATUS_RULE if format_check is not None and current["status"] != "fillable"
-                           and not key.endswith("::status_wrong") else "") if part]},
+                           and check != "status_wrong" else "") if part]},
             criteria=criteria,
         )
         
@@ -629,7 +652,8 @@ async def verify_fields(
     wrong_threshold: float = 0.8,
     *,
     debug: bool = False,
-) -> list[str]:
+) -> list[Remark]:
+    """Задаёт Jev вопросы по полям и возвращает проверки с оценкой не ниже порога."""
     if not 0 < wrong_threshold < 1:
         raise ValueError("Порог проверки должен находиться между 0 и 1")
 
@@ -644,17 +668,18 @@ async def verify_fields(
         response_model=VerificationResponse,
     )
 
+    verifier = getattr(client, "name", "Decision model")
     if set(response.answers) != set(questions.root):
-        raise VerificationError(f"{getattr(client, 'name', 'Decision model')} вернул неполный или неожиданный набор проверок")
+        raise VerificationError(f"{verifier} вернул неполный или неожиданный набор проверок")
 
     if debug:
-        print(f"{getattr(client, 'name', 'Decision model')}: оценки ошибок, порог={wrong_threshold:.2f}:", flush=True)
+        print(f"{verifier}: оценки ошибок, порог={wrong_threshold:.2f}:", flush=True)
         for key, answer in response.answers.items():
             print(f"  {key}: {answer.noul:.3f}", flush=True)
 
     return [
-        f"{key}: {getattr(client, 'name', 'Decision model')} обнаружил возможную ошибку ({answer.noul:.2f}). "
-        + questions.root[key].instructions["question"]
+        Remark(*parse_check_key(key), score=answer.noul, verifier=verifier,
+               question=questions.root[key].instructions["question"])
         for key, answer in response.answers.items()
         if answer.noul >= wrong_threshold
     ]

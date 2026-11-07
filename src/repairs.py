@@ -4,6 +4,7 @@ import re
 
 from src.cases.document_type import DocumentMessage
 from src.extraction import _NUMBERS
+from src.schemas.document_schemas import field_root
 from src.schemas.extraction_schemas import ExtractionError, ExtractionProposal, SourceQuote, SourceFragmentSelection
 
 
@@ -213,7 +214,7 @@ def repair_roots(paths: list[str]) -> list[str]:
     template.fields и схемы обычного ответа ремонта. Существование путей
     проверяется отдельно через plan_repair/_validate_paths.
     """
-    return sorted({path.split("[", 1)[0].split(".", 1)[0] for path in paths})
+    return sorted({field_root(path) for path in paths})
 
 
 def merge_repair(

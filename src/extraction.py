@@ -17,6 +17,7 @@ from src.schemas.document_schemas import (
     ValidationIssue,
     InvoiceFields,
     TransferFields,
+    field_root,
 )
 from src.schemas.extraction_schemas import (
     Calculation,
@@ -339,16 +340,20 @@ _REQUISITE_FORMATS = {
 
 def _invalid_format(name: str, value: object) -> bool:
     """Возвращает True, если некорректный формат"""
+    
     if name in _REQUISITE_FORMATS:
         pattern, _ = _REQUISITE_FORMATS[name]
         return not isinstance(value, str) or re.fullmatch(pattern, value) is None
+    
     if name == "basis_date":
         try:
             return not isinstance(value, str) or date.fromisoformat(value).isoformat() != value
         except ValueError:
             return True
+    
     if name == "amount_rub":
         return not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0
+    
     if name == "vat_rate_percent":
         return not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 100
     return False
@@ -373,21 +378,21 @@ def requisite_format_context(name: str, value: object = None) -> dict | None:
 
 
 def requisite_source_candidates(name: str, messages: list[DocumentMessage]) -> list[dict] | None:
-    """Только строки допустимого формата; принадлежность и актуальность решает Jev.
+    """Ищет в сообщениях пользователя строки, подходящие по формату на заданный реквизит"""
 
-    Не извлекаем короткое число из более длинного и не используем реплики
-    ассистента. None означает поле без поддерживаемого здесь валидатора.
-    """
     if name not in _REQUISITE_FORMATS:
         return None
+    
     pattern = _REQUISITE_FORMATS[name][0]
     if name != "recipient_email":
         pattern = rf"(?<!\d){pattern}(?!\d)"
+
     candidates = []
     seen = set()
     for message in messages:
         if message.role != "user":
             continue
+        
         for match in re.finditer(pattern, message.text):
             value = match.group()
             identity = (message.id, value)
@@ -536,6 +541,12 @@ def _prepare_field(
             raise ExtractionError("items: ожидается непустой список позиций", repair_paths=("items",))
 
         for index, item in enumerate(value):
+            if item["description"] is not None and not item["description"].strip():
+                raise ExtractionError(
+                    f"items[{index}].description: наименование не может быть пустым; "
+                    "если товар или услуга не названы, верни description=null.",
+                    code="missing_value", repair_paths=(f"items[{index}].description",),
+                )
             if item["unit"] is not None and not _has_whole_unit_source(
                 item["unit"], field.evidence, indexed,
             ):
@@ -604,6 +615,24 @@ def prepare_fields(
         ) from error
 
 
+def amount_depends_on_unverified_items(proposal: ExtractionProposal, bad_roots: set[str]) -> bool:
+    """Вычисляемый итог зависит от позиций, которые не удалось подтвердить.
+
+    Формулы с цитатами не содержат явного графа зависимостей, поэтому итог
+    с calculation консервативно считается зависящим от позиций.
+    """
+    amount = proposal.fields.get("amount_rub")
+    return ("items" in bad_roots and "amount_rub" not in bad_roots
+            and amount is not None and amount.calculation is not None)
+
+
+def dependent_amount_issue(stage: str) -> ValidationIssue:
+    return ValidationIssue(
+        path="amount_rub", stage=stage, code="unverified_dependency",
+        message="Вычисляемая сумма требует проверки: данные позиций не подтверждены.",
+    )
+
+
 def prepare_partial_fields(
     proposal: ExtractionProposal,
     messages: list[DocumentMessage],
@@ -636,7 +665,7 @@ def prepare_partial_fields(
             _check_source(source, indexed, path=path)
         except ExtractionError as error:
             record(error)
-            bad_sources.add(path.split(".", 1)[0].split("[", 1)[0])
+            bad_sources.add(field_root(path))
 
     for name, field in proposal.fields.items():
         checked = _raw_field(field)
@@ -659,15 +688,9 @@ def prepare_partial_fields(
         record(ExtractionError("Без НДС не должно одновременно иметь заполненную ставку НДС",
                                repair_paths=("vat_mode", "vat_rate_percent")))
 
-    bad_roots = {issue.path.split(".", 1)[0].split("[", 1)[0] for issue in report.issues}
-    # Формулы с цитатами не содержат явного графа зависимостей. Консервативно
-    # отмечаем вычисляемый итог, когда позиции не удалось подтвердить.
-    amount = proposal.fields.get("amount_rub")
-    if "items" in bad_roots and "amount_rub" not in bad_roots and amount is not None and amount.calculation is not None:
-        report.issues.append(ValidationIssue(
-            path="amount_rub", stage="python", code="unverified_dependency",
-            message="Вычисляемая сумма требует проверки: данные позиций не подтверждены.",
-        ))
+    bad_roots = {field_root(issue.path) for issue in report.issues}
+    if amount_depends_on_unverified_items(proposal, bad_roots):
+        report.issues.append(dependent_amount_issue("python"))
         bad_roots.add("amount_rub")
 
     for name in bad_roots:

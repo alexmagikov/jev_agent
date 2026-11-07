@@ -9,21 +9,21 @@ from typing import Literal
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from src.cases.document_type import DocumentMessage
-from src.client import decision_sdk_options, AsyncCLM, DecisionModelClient, AsyncJeff, AsyncLaya, DecisionUsage
+from src.client import decision_sdk_options, DecisionModelClient, DecisionUsage
 from src.schemas.document_schemas import DocumentResult
 from src.extraction import validate_messages
 from src.llm import AsyncLLMExtractor, LLMUsage
 from src.metrics import AcceptanceMetrics, FieldMetrics, MetricsReport, calculate_metrics
 from src.pipeline import PipelineError, PipelineRateLimitError, classify_document, process_document
 from src.schemas.schemas import DocumentType, SplitFilter, DataSplit, Probability
-from src.settings import CLMSettings, JeffSettings, DecisionModelSettings, LayaSettings, LLMSettings, PipelineSettings
-from src.run_artifacts import RunArtifacts, input_fingerprint, public_settings, write_errors, write_results
+from src.settings import DecisionModelSettings, LLMSettings, PipelineSettings
+from src.run_artifacts import RunArtifacts, input_fingerprint, public_settings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LABEL_ADAPTER = TypeAdapter(DocumentResult)
 
-DEFAULT_INPUT_PATH = PROJECT_ROOT / "data" / "cases.jsonl"
-DEFAULT_LABELS_PATH = PROJECT_ROOT / "data" / "labels.jsonl"
+DEFAULT_INPUT_PATH = PROJECT_ROOT / "data" / "cases_challenge.jsonl"
+DEFAULT_LABELS_PATH = PROJECT_ROOT / "data" / "labels_challenge.jsonl"
 DEFAULT_OUTPUT_PATH = PROJECT_ROOT / "outputs" / "document_types.jsonl"
 DEFAULT_FULL_OUTPUT_PATH = PROJECT_ROOT / "outputs" / "predictions.jsonl"
 DEFAULT_LLM_ONLY_OUTPUT_PATH = PROJECT_ROOT / "outputs" / "predictions.llm-only.jsonl"
@@ -302,8 +302,6 @@ def print_decision_usage(usage: DecisionUsage | None, *, name: str = "Decision m
     cost = f"${estimated_cost:.6f}" if estimated_cost is not None else "н/д"
     print(f"  Оценка стоимости {name} по usage и заданным тарифам: {cost}")
     print(f"  Стоимость {name} не включена в оценку стоимости LLM.")
-    if name == "CLM":
-        print("  Usage CLM считает токены кодировщика на промахах кеша, не полный текст HTTP-запроса.")
 
 
 async def main(
@@ -315,12 +313,12 @@ async def main(
     limit: int | None = None,
     debug: bool = False,
     fail_fast: bool = False,
-    verifier: Literal["jeff", "clm", "jev", "laya", "decision"] = "jeff",
+    verifier: Literal["jev", "decision"] = "decision",
     case_ids: list[str] | None = None,
 ) -> Path:
     if mode not in ("classification", "full", "llm-only"):
         raise ValueError("Неизвестный режим обработки")
-    if verifier not in ("jeff", "clm", "jev", "laya", "decision"):
+    if verifier not in ("jev", "decision"):
         raise ValueError("Неизвестная модель проверки")
     if limit is not None and limit < 1:
         raise ValueError("--limit должен быть положительным")
@@ -360,27 +358,18 @@ async def main(
     run_started = perf_counter()
     stopped_error: PipelineError | None = None
     client = None
-    verifier_name = {"jeff": "Jeff", "clm": "CLM", "jev": "Jev", "laya": "Laya", "decision": "Decision model"}[verifier]
+    verifier_name = "Jev"
     decision_settings = None
     if mode != "llm-only":
-        if verifier == "laya":
-            decision_settings = LayaSettings()
-            client = AsyncLaya(decision_settings)
-        elif verifier == "jeff":
-            decision_settings = JeffSettings()
-            client = AsyncJeff(decision_settings)
-        elif verifier == "clm":
-            decision_settings = CLMSettings()
-            client = AsyncCLM(decision_settings)
-        else:
-            decision_settings = DecisionModelSettings()
-            options = decision_sdk_options(decision_settings)
-            client = DecisionModelClient(api_key=options.pop("api_key"), sdk_options=options, name=decision_settings.model)
-            verifier_name = decision_settings.model if verifier == "decision" else "Jev"
+        decision_settings = DecisionModelSettings()
+        options = decision_sdk_options(decision_settings)
+        client = DecisionModelClient(api_key=options.pop("api_key"), sdk_options=options, name=decision_settings.model)
+        if verifier == "decision":
+            verifier_name = decision_settings.model
 
     pipeline_settings = PipelineSettings() if document_mode else None
     llm_settings = LLMSettings() if document_mode else None
-    wrong_threshold = getattr(decision_settings, "wrong_threshold", pipeline_settings.wrong_threshold) if document_mode else None
+    wrong_threshold = pipeline_settings.wrong_threshold if document_mode else None
     run = RunArtifacts(output_path, {
         "mode": mode, "verifier": verifier if mode != "llm-only" else None,
         "input": input_fingerprint(input_path), "labels": input_fingerprint(labels_path),
@@ -461,10 +450,6 @@ async def main(
             print("Режим llm-only: классификация LLM → извлечение LLM → Python; без внешнего верификатора.", flush=True)
         else:
             print(f"Режим full: классификация {verifier_name} → извлечение LLM → Python → проверка {verifier_name} → ограниченный ремонт.", flush=True)
-            if verifier in ("clm", "jeff", "laya"):
-                print(f"{verifier_name}: порог={wrong_threshold:g}; калибровка вероятности ошибки на наших данных не подтверждена.", flush=True)
-            if verifier == "laya":
-                print(f"Laya: max_len={decision_settings.max_len}, head_max_len={decision_settings.head_max_len}; длинный контекст может усекаться моделью.", flush=True)
         if debug:
             print("DEBUG: ответы модели и эталоны могут содержать реквизиты; не публикуйте вывод.", flush=True)
     try:
@@ -523,7 +508,7 @@ async def main(
 
 def build_parser() -> ArgumentParser:
     parser = ArgumentParser(
-        description="Обработка документов с Jeff/CLM/Jev/Laya (full) или только LLM (llm-only)."
+        description="Обработка документов с проверкой Jev (full) или только LLM (llm-only)."
     )
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT_PATH)
     parser.add_argument("--output", type=Path, default=None,
@@ -531,9 +516,10 @@ def build_parser() -> ArgumentParser:
                              "По умолчанию outputs/document_types.jsonl, predictions.jsonl (full) "
                              "или predictions.llm-only.jsonl (llm-only); фактический путь печатается в консоли.")
     parser.add_argument("--labels", type=Path, default=DEFAULT_LABELS_PATH)
-    parser.add_argument("--mode", choices=("classification", "full", "llm-only"), default="classification")
-    parser.add_argument("--verifier", choices=("jeff", "clm", "jev", "laya", "decision"), default="jeff",
-                        help="Классификатор и верификатор; по умолчанию собственный Jeff API.")
+    parser.add_argument("--mode", choices=("classification", "full", "llm-only"), default="full")
+    parser.add_argument("--verifier", choices=("jev", "decision"), default="decision",
+                        help="Модель решений через DECISION_*; jev — прежнее имя той же настройки, "
+                             "decision печатает имя модели из DECISION_MODEL.")
     parser.add_argument("--case-id", action="append", dest="case_ids",
                         help="Обработать только этот case_id из выбранного split; можно повторять. "
                              "Порядок — как в датасете, повторы ID игнорируются.")

@@ -4,6 +4,8 @@ from collections.abc import Mapping, Sequence
 from math import isfinite
 
 from src.metrics import JsonRow, field_matches
+from src.schemas.document_schemas import field_root
+from src.verification import parse_check_key
 
 
 def calculate_detection_metrics(records: Sequence[JsonRow], labels: Sequence[JsonRow]) -> dict:
@@ -81,10 +83,6 @@ def _number(value) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and isfinite(value)
 
 
-def _root(path: str) -> str:
-    return path.split("::", 1)[0].split("[", 1)[0].split(".", 1)[0]
-
-
 def _round_scores(round_: Mapping, fields: Mapping) -> dict:
     questions, answers = round_.get("questions"), round_.get("answers")
     if (not isinstance(questions, Mapping) or not isinstance(answers, Mapping)
@@ -92,9 +90,11 @@ def _round_scores(round_: Mapping, fields: Mapping) -> dict:
         return {}
     scores = {}
     for key, answer in answers.items():
-        root = _root(key)
+        if "::" not in key:
+            return {}
+        root = field_root(parse_check_key(key)[0])
         value = answer.get("noul") if isinstance(answer, Mapping) else None
-        if "::" not in key or root not in fields or not _number(value) or not 0 <= value <= 1:
+        if root not in fields or not _number(value) or not 0 <= value <= 1:
             return {}
         scores.setdefault(root, {})[key] = value
     return scores
@@ -149,7 +149,7 @@ def _final_field_state(record: Mapping, target: Mapping, name: str) -> dict:
         document_status = validation.get("status", "unknown")
         state["document_disposition"] = document_status
         issues = validation.get("issues", [])
-        stages = sorted({issue.get("stage", "unknown") for issue in issues if _root(issue.get("path", "")) == name})
+        stages = sorted({issue.get("stage", "unknown") for issue in issues if field_root(issue.get("path", "")) == name})
         marked = actual is not None and actual.get("validation_status") == "needs_review"
         if marked or stages:
             state.update(final_disposition="needs_review", review_stages=stages,
