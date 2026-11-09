@@ -151,3 +151,7 @@ type DocumentResult = Annotated[
     InvoiceResult | TransferResult | NoDocumentResult,
     Field(discriminator="document_type"),
 ]
+
+# Классы полей и результата для каждого поддерживаемого черновика.
+FIELDS_BY_TYPE = {"invoice_draft": InvoiceFields, "transfer_draft": TransferFields}
+RESULT_BY_TYPE = {"invoice_draft": InvoiceResult, "transfer_draft": TransferResult}

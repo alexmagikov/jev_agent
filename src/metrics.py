@@ -146,7 +146,7 @@ def calculate_metrics(
     document_type_correct = len(labels_by_id) - len(document_type_mismatches)
 
     label_fields = _all_fields(
-        labels_by_id, 
+        labels_by_id,
         fields_required=True
     )
     predicted_fields = _all_fields(

@@ -1,5 +1,7 @@
 import asyncio
 import json
+import logging
+import sys
 from argparse import ArgumentParser
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -267,7 +269,7 @@ def estimate_usage_costs(
         unanswered["llm"] = max(0, llm_usage.requests - llm_usage.responses
                                 - llm_usage.rate_limit_errors - llm_usage.error_responses)
         llm_cost = llm_usage.estimated_cost if llm_usage.responses == llm_usage.usage_reports else None
-    
+
     decision_cost = 0.0
     if include_decision:
         decision_cost = None
@@ -322,50 +324,21 @@ async def main(
         raise ValueError("Неизвестная модель проверки")
     if limit is not None and limit < 1:
         raise ValueError("--limit должен быть положительным")
-    
+
     document_mode = mode in ("full", "llm-only")
-    default_outputs = {
+    output_path = output_path or {
         "classification": DEFAULT_OUTPUT_PATH, "full": DEFAULT_FULL_OUTPUT_PATH,
         "llm-only": DEFAULT_LLM_ONLY_OUTPUT_PATH,
-    }
-    output_path = output_path or default_outputs[mode]
-    if not output_path.name or output_path.is_dir() or output_path.name in {"config.json", "metrics.json", "run.json"}:
-        raise ValueError("--output должен задавать имя файла результата, отличное от config.json, metrics.json и run.json")
-    errors_path = output_path.with_name(output_path.stem + ".errors.jsonl")
-    protected_paths = {input_path.resolve(), labels_path.resolve()}
-    if output_path.resolve() in protected_paths or errors_path.resolve() in protected_paths:
-        raise ValueError("Путь результата не должен совпадать с датасетом или разметкой")
-    if errors_path.resolve() == output_path.resolve():
-        raise ValueError("Пути результата и ошибок не должны совпадать")
+    }[mode]
+    _check_output_path(output_path, input_path, labels_path)
 
     # Обнаружение ошибок до платных запросов
-    cases = load_cases(input_path, split)
-    if case_ids:
-        requested_ids = set(case_ids)
-        missing_ids = requested_ids - {case.case_id for case in cases}
-        if missing_ids:
-            raise ValueError(
-                f"Кейсы не найдены в выборке '{split}': {', '.join(sorted(missing_ids))}"
-            )
-        cases = [case for case in cases if case.case_id in requested_ids]
-    if limit is not None:
-        cases = cases[:limit]
-    if not cases:
-        raise ValueError("В выбранной выборке нет кейсов")
-    
+    cases = select_cases(input_path, split, case_ids, limit)
     labels = load_labels(labels_path, {case.case_id for case in cases})
-    
+
     run_started = perf_counter()
     stopped_error: PipelineError | None = None
-    client = None
-    verifier_name = "Jev"
-    decision_settings = None
-    if mode != "llm-only":
-        decision_settings = DecisionModelSettings()
-        options = decision_sdk_options(decision_settings)
-        client = DecisionModelClient(api_key=options.pop("api_key"), sdk_options=options, name=decision_settings.model)
-        if verifier == "decision":
-            verifier_name = decision_settings.model
+    client, decision_settings, verifier_name = (None, None, "Jev") if mode == "llm-only" else _decision_client(verifier)
 
     pipeline_settings = PipelineSettings() if document_mode else None
     llm_settings = LLMSettings() if document_mode else None
@@ -379,7 +352,7 @@ async def main(
         "max_attempts": pipeline_settings.max_attempts if pipeline_settings else None,
         "wrong_threshold": wrong_threshold,
     })
-    
+
     output_path, errors_path = run.output, run.errors
     results = []
     errors: list[dict[str, str]] = []
@@ -421,7 +394,7 @@ async def main(
                     result = await process_document(
                         case.case_id, case.messages, client, extractor,
                         max_attempts=pipeline_settings.max_attempts,
-                        wrong_threshold=wrong_threshold, debug=debug, use_verifier=mode == "full",
+                        wrong_threshold=wrong_threshold, use_verifier=mode == "full",
                     )
                 else:
                     result = (await classify_cases([case], client))[0]
@@ -446,15 +419,10 @@ async def main(
                 break
 
     if document_mode:
-        if mode == "llm-only":
-            print("Режим llm-only: классификация LLM → извлечение LLM → Python; без внешнего верификатора.", flush=True)
-        else:
-            print(f"Режим full: классификация {verifier_name} → извлечение LLM → Python → проверка {verifier_name} → ограниченный ремонт.", flush=True)
-        if debug:
-            print("DEBUG: ответы модели и эталоны могут содержать реквизиты; не публикуйте вывод.", flush=True)
+        _print_mode(mode, verifier_name, debug)
     try:
         if document_mode:
-            async with AsyncLLMExtractor(llm_settings, debug=debug) as extractor:
+            async with AsyncLLMExtractor(llm_settings) as extractor:
                 await process_cases()
         else:
             await process_cases()
@@ -469,41 +437,106 @@ async def main(
         raise
     finally:
         if document_mode:
-            costs = estimate_usage_costs(extractor.usage if extractor is not None else None,
-                                         getattr(client, "usage", None), decision_settings=decision_settings,
-                                         include_decision=client is not None)
-            if extractor is not None:
-                print_llm_usage(extractor.usage)
-            if client is not None:
-                print_decision_usage(getattr(client, "usage", None), name=verifier_name,
-                                     estimated_cost=costs["decision_usd"])
-            total_cost = f"${costs['total_usd']:.6f}" if costs["total_usd"] is not None else "н/д"
-            if costs["is_lower_bound"]:
-                unanswered = sum(costs["unanswered_requests"].values())
-                total_cost += (f" (нижняя граница: запросов без ответа — {unanswered})" if costs["total_usd"] is not None
-                               else f" (запросов без ответа — {unanswered})")
-            print(f"Оценка общей стоимости запуска: {total_cost}")
+            _print_run_costs(extractor, client, decision_settings, verifier_name)
             print(f"Полное время прогона ({mode}): {perf_counter() - run_started:.2f} с", flush=True)
 
     report = checkpoint("stopped" if stopped_error is not None else "completed",
                         type(stopped_error).__name__ if stopped_error is not None else None)
+    _print_run_summary(report, results, errors, len(cases), stopped=stopped_error is not None)
+    print(f"Результат: {output_path}")
+    print_metrics(report)
+    if stopped_error is not None:
+        raise stopped_error
+    return output_path
 
+
+def _decision_client(verifier: str) -> tuple[DecisionModelClient, DecisionModelSettings, str]:
+    """Клиент модели решений из DECISION_*; decision печатает имя модели, jev — «Jev»."""
+    settings = DecisionModelSettings()
+    options = decision_sdk_options(settings)
+    client = DecisionModelClient(api_key=options.pop("api_key"), sdk_options=options, name=settings.model)
+    return client, settings, settings.model if verifier == "decision" else "Jev"
+
+
+def _print_mode(mode: str, verifier_name: str, debug: bool) -> None:
+    if mode == "llm-only":
+        print("Режим llm-only: классификация LLM → извлечение LLM → Python; без внешнего верификатора.", flush=True)
+    else:
+        print(f"Режим full: классификация {verifier_name} → извлечение LLM → Python → проверка {verifier_name} → ограниченный ремонт.", flush=True)
+    if debug:
+        print("DEBUG: ответы модели и эталоны могут содержать реквизиты; не публикуйте вывод.", flush=True)
+
+
+def _check_output_path(output_path: Path, input_path: Path, labels_path: Path) -> None:
+    """Результат и файл ошибок не перезаписывают датасет, разметку или служебные файлы запуска."""
+    if not output_path.name or output_path.is_dir() or output_path.name in {"config.json", "metrics.json", "run.json"}:
+        raise ValueError("--output должен задавать имя файла результата, отличное от config.json, metrics.json и run.json")
+    errors_path = output_path.with_name(output_path.stem + ".errors.jsonl")
+    protected_paths = {input_path.resolve(), labels_path.resolve()}
+    if output_path.resolve() in protected_paths or errors_path.resolve() in protected_paths:
+        raise ValueError("Путь результата не должен совпадать с датасетом или разметкой")
+    if errors_path.resolve() == output_path.resolve():
+        raise ValueError("Пути результата и ошибок не должны совпадать")
+
+
+def select_cases(input_path: Path, split: SplitFilter, case_ids: list[str] | None, limit: int | None) -> list[InputCase]:
+    """Кейсы выборки после фильтров --split, --case-id и --limit; неизвестный ID — ошибка."""
+    cases = load_cases(input_path, split)
+    if case_ids:
+        requested_ids = set(case_ids)
+        missing_ids = requested_ids - {case.case_id for case in cases}
+        if missing_ids:
+            raise ValueError(
+                f"Кейсы не найдены в выборке '{split}': {', '.join(sorted(missing_ids))}"
+            )
+        cases = [case for case in cases if case.case_id in requested_ids]
+    if limit is not None:
+        cases = cases[:limit]
+    if not cases:
+        raise ValueError("В выбранной выборке нет кейсов")
+    return cases
+
+
+def _print_run_costs(extractor, client, decision_settings, verifier_name: str) -> None:
+    """Расход LLM и модели решений и общая оценка стоимости запуска."""
+    costs = estimate_usage_costs(extractor.usage if extractor is not None else None,
+                                 getattr(client, "usage", None), decision_settings=decision_settings,
+                                 include_decision=client is not None)
+    if extractor is not None:
+        print_llm_usage(extractor.usage)
+    if client is not None:
+        print_decision_usage(getattr(client, "usage", None), name=verifier_name,
+                             estimated_cost=costs["decision_usd"])
+    total_cost = f"${costs['total_usd']:.6f}" if costs["total_usd"] is not None else "н/д"
+    if costs["is_lower_bound"]:
+        unanswered = sum(costs["unanswered_requests"].values())
+        total_cost += (f" (нижняя граница: запросов без ответа — {unanswered})" if costs["total_usd"] is not None
+                       else f" (запросов без ответа — {unanswered})")
+    print(f"Оценка общей стоимости запуска: {total_cost}")
+
+
+def _print_run_summary(report: MetricsReport, results: list, errors: list, selected: int, *, stopped: bool) -> None:
+    """Сколько кейсов обработано, принято, отправлено на проверку и не обработано."""
     print(f"Обработано кейсов: {report.total_cases}")
     review_count = sum(getattr(getattr(row, "validation", None), "status", None) == "needs_review"
                        for row in results)
     print(f"Успешно: {len(results) - review_count}; с ошибкой: {len(errors)}")
     if review_count:
         print(f"Требуют проверки: {review_count}")
-    if stopped_error is not None:
-        print(f"Прогон остановлен. Не обработано: {len(cases) - report.total_cases}")
+    if stopped:
+        print(f"Прогон остановлен. Не обработано: {selected - report.total_cases}")
         print("Частичные метрики: только обработанные кейсы, включая неуспешные.")
     else:
         print("Метрики учитывают все выбранные кейсы, включая неуспешные.")
-    print(f"Результат: {output_path}")
-    print_metrics(report)
-    if stopped_error is not None:
-        raise stopped_error
-    return output_path
+
+
+def configure_logging(debug: bool) -> None:
+    """Сообщения пайплайна идут через logging; включаются только логгеры проекта, не HTTP-библиотек."""
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    project = logging.getLogger("src")
+    project.addHandler(handler)
+    project.setLevel(logging.DEBUG if debug else logging.INFO)
 
 
 def build_parser() -> ArgumentParser:
@@ -545,6 +578,7 @@ def build_parser() -> ArgumentParser:
 if __name__ == "__main__":
     parser = build_parser()
     arguments = parser.parse_args()
+    configure_logging(arguments.debug)
     try:
         asyncio.run(
             main(

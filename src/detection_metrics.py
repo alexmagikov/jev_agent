@@ -9,7 +9,7 @@ from src.verification import parse_check_key
 
 
 def calculate_detection_metrics(records: Sequence[JsonRow], labels: Sequence[JsonRow]) -> dict:
-    """ Cравнивает исходный кандидат с эталоном и смотрит первый ответ Jev. 
+    """ Cравнивает исходный кандидат с эталоном и смотрит первый ответ Jev.
     Считает правильные обнаружения, ложные замечания, пропущенные ошибки и правильные принятия — TP, FP, FN, TN.
 
     Истина — статус и значение эталона с разрешёнными вариантами. Для оценки
@@ -22,7 +22,7 @@ def calculate_detection_metrics(records: Sequence[JsonRow], labels: Sequence[Jso
               "total_cases": len(records), "evaluated_cases": 0, "evaluated_fields": 0,
               "total_fields": sum(len(targets[r["case_id"]]["fields"]) for r in records),
               "tp": 0, "fp": 0, "fn": 0, "tn": 0, "details": [], "skipped_cases": []}
-    
+
     for record in records:
         case_id = record["case_id"]
         target, before = targets[case_id], record.get("before")
@@ -30,7 +30,7 @@ def calculate_detection_metrics(records: Sequence[JsonRow], labels: Sequence[Jso
         first = next((r for r in rounds if r.get("candidate_index") == 0 and "answers" in r), None)
         candidates = record.get("candidates", [])
         reason = None
-        
+
         if before is None:
             reason = "no_baseline"
         elif before["document_type"] != target["document_type"]:
@@ -45,7 +45,7 @@ def calculate_detection_metrics(records: Sequence[JsonRow], labels: Sequence[Jso
             threshold = first.get("wrong_threshold")
             if not _number(threshold) or not 0 < threshold < 1:
                 reason = "unknown_threshold"
-    
+
         if reason is not None:
             report["skipped_cases"].append({"case_id": case_id, "reason": reason})
             continue

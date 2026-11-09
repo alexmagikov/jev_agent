@@ -3,7 +3,7 @@
 import re
 
 from src.cases.document_type import DocumentMessage
-from src.extraction import _NUMBERS
+from src.extraction import NUMBERS
 from src.schemas.document_schemas import field_root
 from src.schemas.extraction_schemas import ExtractionError, ExtractionProposal, SourceQuote, SourceFragmentSelection
 
@@ -13,16 +13,11 @@ _PLANS = {"quantity": "quantity_calculation", "unit_price_rub": "unit_price_calc
 
 
 def _source_parts(base: ExtractionProposal) -> dict[str, tuple[SourceQuote, str, tuple]]:
-    """Находит цитаты и message_id, которые можно исправить отдельно.
+    """Адреса частей источников, которые можно исправить по отдельности.
 
-    Возвращает словарь: путь → (объект источника, имя свойства, данные для сверки).
-    Например, items.evidence[0].quote указывает на конкретный SourceQuote и quote.
-    Такие же адреса создаются для источников операндов формул.
-
-    Данные для сверки — длина списка цитат либо число операндов и имя операнда.
-    merge_repair сравнивает их у старого и нового ответа, чтобы заметить смену
-    размера списка или перестановку исправляемого операнда.
-    Здесь строятся только адреса; текст цитат не проверяется и не меняется.
+    Путь (например, items.evidence[0].quote) → (SourceQuote, имя части, данные для сверки).
+    Данные для сверки — длина списка цитат или (число операндов, имя операнда): по ним
+    merge_repair замечает, что ответ ремонта изменил размер списка или порядок операндов.
     """
     result = {}
     for name, field in base.fields.items():
@@ -35,7 +30,7 @@ def _source_parts(base: ExtractionProposal) -> dict[str, tuple[SourceQuote, str,
             for index, item in enumerate(field.value):
                 plans.extend((f"items[{index}].{plan_name}", getattr(item, plan_name))
                              for plan_name in ("quantity_calculation", "unit_price_calculation"))
-                
+
         for prefix, plan in plans:
             if plan is not None:
                 for index, operand in enumerate(plan.operands):
@@ -49,15 +44,9 @@ def _source_parts(base: ExtractionProposal) -> dict[str, tuple[SourceQuote, str,
 def source_repair_context(
     base: ExtractionProposal, paths: list[str], messages: list[DocumentMessage],
 ) -> list[dict[str, str]]:
-    """Собирает исходные сообщения, по которым LLM исправит недословные цитаты.
+    """Неточные цитаты из paths вместе с полным текстом исходной реплики пользователя.
 
-    base — предыдущий ответ модели; paths — разрешённые пути исправления;
-    messages — диалог. Для каждого повреждённого quote возвращает его путь,
-    message_id, ошибочный текст и полный текст исходной реплики пользователя.
-
-    Уже дословные цитаты, пути к message_id, неизвестные сообщения и реплики
-    ассистента пропускаются. Результат идёт в source_quote_errors и используется
-    для подготовки вариантов цитат. Сам кандидат base не изменяется.
+    Уже дословные цитаты, пути к message_id и реплики ассистента пропускаются; base не меняется.
     """
     sources = _source_parts(base)
     indexed = {message.id: message for message in messages}
@@ -78,21 +67,16 @@ def source_repair_context(
 
 
 def quote_fragment_options(context: list[dict[str, str]]) -> list[dict]:
-    """Готовит дословные варианты цитат, из которых LLM выберет подходящий.
+    """Дословные варианты для каждой неточной цитаты; LLM выбирает их по fragment_id.
 
-    Получает контекст ошибок из source_repair_context. Для обычной цитаты
-    предлагает отдельные предложения/строки и полную реплику пользователя.
-    Для операнда формулы предлагает только найденные числовые фрагменты.
-
-    Возвращает варианты по каждому пути: fragment_id, например q0f1, и текст.
-    Повторяющиеся варианты убираются. Благодаря выбору по ID модель не должна
-    сама переписывать цитату с кавычками, пробелами и пунктуацией.
+    Для обычной цитаты — предложения и строки реплики плюс реплика целиком, для операнда —
+    только числа. Выбор по ID избавляет модель от переписывания кавычек и пробелов.
     """
     result = []
     for index, source in enumerate(context):
         text = source["source_text"]
         if ".operands[" in source["path"]:
-            fragments = [match.group() for match in _NUMBERS.finditer(text)]
+            fragments = [match.group() for match in NUMBERS.finditer(text)]
         else:
             fragments = [part.strip() for part in re.split(r"(?<=[.!?;])\s+|[\r\n]+", text) if part.strip()]
             # Полная реплика остаётся вариантом для связи сведений из разных предложений.
@@ -108,16 +92,9 @@ def quote_fragment_options(context: list[dict[str, str]]) -> list[dict]:
 def apply_quote_fragment_selections(
     base: ExtractionProposal, options: list[dict], selections: list[SourceFragmentSelection],
 ) -> ExtractionProposal:
-    """Заменяет повреждённые цитаты готовыми фрагментами, выбранными LLM по ID.
+    """Подставляет выбранные LLM фрагменты в копию base; меняется только quote.
 
-    base — предыдущий кандидат; options — варианты из quote_fragment_options;
-    selections — ответ модели с парами path и fragment_id. Для каждого пути
-    должен быть ровно один выбор из вариантов именно этого пути.
-
-    В копии base меняется только quote. Текст берётся из options; значения
-    полей и message_id сохраняются. Пропущенные/лишние пути, неизвестный ID,
-    null или смена источника вызывают ExtractionError.
-    Возвращённый кандидат затем проходит обычные проверки.
+    Для каждого пути нужен ровно один допустимый fragment_id, иначе ExtractionError.
     """
     by_path = {entry["path"]: entry for entry in options}
     if len(selections) != len(by_path) or {choice.path for choice in selections} != set(by_path):
@@ -137,16 +114,10 @@ def apply_quote_fragment_selections(
 
 
 def _validate_paths(base: ExtractionProposal, paths: list[str]) -> set[str]:
-    """Проверяет, что запрошенные места исправления существуют в base.
+    """Проверяет, что пути ремонта есть в base, и убирает пути, вложенные в другие.
 
-    Разрешает целое поле, его список evidence, существующий quote/message_id
-    или атрибут существующей позиции items со статусом fillable.
-    Например, items.evidence[0].quote допустим только при наличии этой цитаты.
-
-    Возвращает множество путей без повторов и лишних вложенных путей:
-    если разрешён весь items, отдельный items[0].quantity уже не нужен.
-    Для пустого списка или неизвестного пути выбрасывает ValueError.
-    Значения полей и достоверность цитат здесь не проверяются.
+    Допустимы целое поле, его evidence, существующие quote/message_id и атрибуты
+    позиций заполненного items. Неизвестный путь — ValueError.
     """
     if not paths:
         raise ValueError("Нужна непустая область ремонта")
@@ -168,20 +139,11 @@ def _validate_paths(base: ExtractionProposal, paths: list[str]) -> set[str]:
 
 
 def plan_repair(base: ExtractionProposal, paths: list[str]) -> list[str]:
-    """Определяет полный список мест, которые LLM разрешено исправить.
+    """Полная область ремонта: пути ошибок плюс зависящие от них расчёты.
 
-    Получает предыдущий кандидат и пути ошибок Python или верификатора.
-    Проверяет пути и добавляет существующие связанные расчёты: при изменении
-    количества, единицы или цены позиции включает её расчётные атрибуты
-    и вычисляемую общую сумму. При ремонте суммы включает расчётные атрибуты
-    всех позиций.
-
-    Например, к items[0].quantity добавится items[0].unit_price_rub, если цена
-    вычислялась формулой. Явно указанная сумма автоматически не добавляется.
-    Ремонт только цитаты не расширяется на числовые значения.
-
-    Возвращает отсортированный список без повторов. Новые значения не вычисляет;
-    повторный вызов с готовым планом возвращает тот же набор путей.
+    Изменение количества, единицы или цены позиции добавляет её расчётные атрибуты
+    и вычисляемую сумму; ремонт суммы — расчётные атрибуты всех позиций. Явно указанная
+    сумма и ремонт одной цитаты область не расширяют. Повторный вызов даёт тот же план.
     """
     result = _validate_paths(base, paths)
     original = result.copy()
@@ -205,37 +167,17 @@ def plan_repair(base: ExtractionProposal, paths: list[str]) -> list[str]:
 
 
 def repair_roots(paths: list[str]) -> list[str]:
-    """Возвращает корневые поля, содержащие указанные пути исправления.
-
-    Например, items[0].quantity и items.evidence[0].quote дают одно поле items.
-    Для amount_rub.calculation.operands[0].source.quote корень — amount_rub.
-
-    Результат отсортирован и не содержит повторов. Эти имена нужны для ограничения
-    template.fields и схемы обычного ответа ремонта. Существование путей
-    проверяется отдельно через plan_repair/_validate_paths.
-    """
+    """Поля шаблона, затронутые путями ремонта: items[0].quantity → items."""
     return sorted({field_root(path) for path in paths})
 
 
 def merge_repair(
     base: ExtractionProposal, candidate: ExtractionProposal, paths: list[str],
 ) -> ExtractionProposal:
-    """Переносит из повторного ответа LLM только разрешённые исправления.
+    """Переносит из ответа ремонта в копию base только разрешённые paths.
 
-    base — предыдущий кандидат; candidate — повторный ответ; paths — готовая
-    область ремонта. Создаёт копию base и заменяет в ней разрешённые поля,
-    списки evidence, части источников или атрибуты позиций.
-    Например, items.evidence[0].quote заменяет только одну цитату: присланные
-    вместе с ней новые unit, количество или цена не переносятся.
-
-    При ремонте атрибута проверяет статус, число и идентичность позиций.
-    Число и его план расчёта переносятся вместе; новые evidence добавляются
-    к прежним для поддержки изменённого атрибута. При ремонте части источника
-    сверяются размер списка и имя операнда.
-
-    Возвращает отдельный объединённый кандидат. Неполный или несовместимый
-    ответ вызывает ExtractionError, неизвестный путь — ValueError.
-    Область ремонта не расширяет; полный набор проверок выполняется позже.
+    Число и его план расчёта переносятся вместе, новые цитаты items добавляются к прежним.
+    Смена статуса, числа или порядка позиций и операндов — ExtractionError.
     """
     allowed = _validate_paths(base, paths)
     missing = set(repair_roots(list(allowed))) - set(candidate.fields)
@@ -260,7 +202,7 @@ def merge_repair(
     attribute_paths = [path for path in allowed if _ATTRIBUTE_PATH.fullmatch(path)]
     if not attribute_paths:
         return result
-    
+
     old, new = base.fields["items"], candidate.fields["items"]
     if (new.status != old.status or not isinstance(new.value, list)
             or len(new.value) != len(old.value)):

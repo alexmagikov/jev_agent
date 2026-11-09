@@ -8,7 +8,8 @@ from tempfile import TemporaryDirectory
 from uuid import uuid4
 
 
-def _write_text_atomic(contents: str, path: Path) -> None:
+def write_text_atomic(contents: str, path: Path) -> None:
+    """Записывает файл целиком или не меняет его: через временный файл и rename."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix=".jev-checkpoint-", dir=path.parent) as directory:
         pending = Path(directory) / "checkpoint.jsonl"
@@ -19,11 +20,11 @@ def _write_text_atomic(contents: str, path: Path) -> None:
 def write_results(results, path: Path) -> None:
     contents = "".join(result.model_dump_json(exclude_none=not hasattr(result, "fields")) + "\n"
                        for result in results)
-    _write_text_atomic(contents, path)
+    write_text_atomic(contents, path)
 
 
 def write_errors(errors: list[dict[str, str]], path: Path) -> None:
-    _write_text_atomic("".join(json.dumps(error, ensure_ascii=False) + "\n" for error in errors), path)
+    write_text_atomic("".join(json.dumps(error, ensure_ascii=False) + "\n" for error in errors), path)
 
 
 def public_settings(settings) -> dict | None:
@@ -56,17 +57,17 @@ class RunArtifacts:
         self.case_ids = config["case_ids"]
         self.files = {"predictions": self.output.name, "errors": self.errors.name,
                       "metrics": self.metrics.name, "config": "config.json"}
-        _write_text_atomic(json.dumps({**config, "run_id": self.run_id}, ensure_ascii=False, indent=2) + "\n",
+        write_text_atomic(json.dumps({**config, "run_id": self.run_id}, ensure_ascii=False, indent=2) + "\n",
                            self.directory / "config.json")
 
     def checkpoint(self, results, errors, report, *, status="running", failure_kind=None, usage=None):
         # Сначала помечаем предыдущий снимок незавершённым. Если запись оборвётся,
         # старый manifest не выдаст новый неполный комплект за готовый результат.
         manifest = self.directory / "run.json"
-        _write_text_atomic(json.dumps({"run_id": self.run_id, "status": "writing"}) + "\n", manifest)
+        write_text_atomic(json.dumps({"run_id": self.run_id, "status": "writing"}) + "\n", manifest)
         write_results(results, self.output)
         write_errors(errors, self.errors)
-        _write_text_atomic(report.model_dump_json(indent=2) + "\n", self.metrics)
+        write_text_atomic(report.model_dump_json(indent=2) + "\n", self.metrics)
         processed = {row.case_id for row in results} | {error["case_id"] for error in errors}
         review_count = sum(getattr(getattr(row, "validation", None), "status", None) == "needs_review"
                            for row in results)
@@ -82,7 +83,7 @@ class RunArtifacts:
                        for key, name in self.files.items()},
             "failure_kind": failure_kind, "usage": usage,
         }
-        _write_text_atomic(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", manifest)
+        write_text_atomic(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", manifest)
 
 
 def load_run(directory: Path) -> dict:

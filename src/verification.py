@@ -1,5 +1,6 @@
 """Модель решений проверяет смысл каждого поля против диалога, включая пропуски."""
 
+import logging
 from dataclasses import dataclass
 from typing import Literal, NamedTuple
 
@@ -17,8 +18,11 @@ from src.field_rules import (
     ITEMS_PRESENCE_RULE, ITEMS_SELECTION_RULE, ITEMS_EXAMPLES, RECIPIENT_NAME_RULE, BASIS_NUMBER_RULE,
     VAT_MODE_RULE, VAT_RATE_RULE, QUOTED_PRODUCT_NAME_RULE, BASIS_DATE_RULE, DESTINATION_BANK_RULE,
 )
-from src.schemas.document_schemas import field_root
+from src.schemas.document_schemas import FIELDS_BY_TYPE, field_root
 from src.schemas.schemas import Probability
+
+
+logger = logging.getLogger(__name__)
 
 
 class VerificationError(RuntimeError):
@@ -574,6 +578,14 @@ def _build_verification_checks(
     return checks
 
 
+_ATTRIBUTE_RULES = {"description": ITEM_DESCRIPTION_SEMANTIC_RULE, "quantity": ITEM_QUANTITY_RULE,
+                    "unit": ITEM_UNIT_RULE, "unit_price_rub": ITEM_UNIT_PRICE_RULE}
+_ATTRIBUTE_MEANINGS = {"description": "Наименование этой позиции счёта",
+                       "quantity": "Количество товара/услуги в этой позиции счёта",
+                       "unit": "Единица измерения количества этой позиции счёта",
+                       "unit_price_rub": "Цена за одну единицу этой позиции счёта в рублях, не сумма строки"}
+
+
 def build_verification_questions(
     fields: PreparedFields, *, proposal: ExtractionProposal | None = None,
     document_type: SupportedDocumentType | None = None,
@@ -585,100 +597,101 @@ def build_verification_questions(
     диалог с пользователем. Для полей без значения Python подбирает цитаты,
     прошедшие проверку формата.
     """
-
-    questions = {}
-    document_type = document_type or ("invoice_draft" if "items" in type(fields).model_fields else "transfer_draft")
-    template = get_template(document_type)
+    document_type = document_type or next(kind for kind, model in FIELDS_BY_TYPE.items() if isinstance(fields, model))
+    invoice = document_type == "invoice_draft"
+    meanings = get_template(document_type)["fields"]
     prepared = fields.model_dump(mode="json")
-    
-    attribute_rules = {"description": ITEM_DESCRIPTION_SEMANTIC_RULE, "quantity": ITEM_QUANTITY_RULE,
-                       "unit": ITEM_UNIT_RULE, "unit_price_rub": ITEM_UNIT_PRICE_RULE}
-    attribute_meanings = {"description": "Наименование этой позиции счёта",
-                          "quantity": "Количество товара/услуги в этой позиции счёта",
-                          "unit": "Единица измерения количества этой позиции счёта",
-                          "unit_price_rub": "Цена за одну единицу этой позиции счёта в рублях, не сумма строки"}
-    
     candidates = {
         name: requisite_source_candidates(name, messages)
         for name, field in prepared.items()
         if messages is not None and field["status"] != "fillable"
     }
 
-    invoice = document_type == "invoice_draft"
-    checks = _build_verification_checks(prepared, proposal, invoice=invoice)
-
-    for key, spec in checks.items():
+    questions = {}
+    for key, spec in _build_verification_checks(prepared, proposal, invoice=invoice).items():
         path, check = parse_check_key(key)
         name = field_root(path)
         source_candidates = candidates.get(name)
         if source_candidates is not None:
+            # Без подходящих по формату строк в репликах эти вопросы не задаются.
             if check == "missing_supported" and not source_candidates:
-                continue 
+                continue
             if check == "unresolved_alternatives" and len({c["quote"] for c in source_candidates}) < 2:
                 continue
 
-        item_rules = _ITEMS_RULES if name == "items" else ""
-        semantic_rule = ""
-        if invoice:
-            semantic_rule = {"amount_rub": INVOICE_AMOUNT_RULE,
-                             "subject": INVOICE_SUBJECT_RULE, "items": ITEM_UNIT_RULE}.get(name, "")
-        if path.startswith("items["):
-            attribute = path.rsplit(".", 1)[-1]
-            item_rules = attribute_rules[attribute]
-            if attribute == "description" and check == "noncanonical":
-                item_rules = ITEM_DESCRIPTION_RULE  # правило формы, а не «форма не важна»
-            semantic_rule = ""
-
         current = prepared[name]
         raw = proposal.fields[name].model_dump(mode="json") if proposal is not None else None
-        claim = {
-            "path": path, "meaning": template["fields"][name],
-            "status": current["status"], "value": current["value"],
-            "evidence": raw["evidence"] if raw is not None else [{"message_id": mid} for mid in current["evidence"]],
-            "calculation": raw["calculation"] if raw is not None else None,
-            "derivation": current["derivation"],
-        }
-
         format_check = requisite_format_context(name, raw["value"] if raw is not None else None)
-        if format_check is not None and (current["status"] == "fillable" or check == "status_wrong"):
-            claim["format_check"] = format_check
-        
-        if source_candidates is not None and check in ("missing_supported", "unresolved_alternatives"):
-            claim["valid_source_candidates"] = source_candidates
-        
-        if path.startswith("items["):
-            index = int(path.split("[", 1)[1].split("]", 1)[0])
-            attribute = path.rsplit(".", 1)[1]
-            claim["meaning"] = attribute_meanings[attribute]
-            claim["item"] = current["value"][index]
-            claim["value"] = claim["item"][attribute]
-            if attribute == "description" and claim["value"] is not None:
-                claim["item_index"] = index
-                claim["extracted_items"] = current["value"]
-            calculation_name = {"quantity": "quantity_calculation", "unit_price_rub": "unit_price_calculation"}.get(attribute)
-            claim["calculation"] = raw["value"][index].get(calculation_name) if raw is not None and calculation_name else None
-            claim.pop("derivation")
-        elif name == "items" and raw is not None and isinstance(raw["value"], list):
-            claim["item_calculations"] = [
-                {plan_name: item[plan_name] for plan_name in ("quantity_calculation", "unit_price_calculation")}
-                for item in raw["value"]
-            ]
-
-        checks_quoted_name = name == "subject" or (
-            name == "items" and (path == "items" or path.endswith("].description"))
-        )
-        quoted_name_rule = QUOTED_PRODUCT_NAME_RULE if checks_quoted_name else ""
+        claim = _claim(path, check, meanings[name], current, raw, format_check, source_candidates)
+        rules = _question_rules(path, check, invoice, current["status"], format_check)
         questions[key] = NoulQuestion(
-            instructions={"question": spec.question, "field": claim, "rules": [part for part in
-                          (_FIELD_RULES.get(name), VAT_MODE_RULE if name == "vat_rate_percent" else "",
-                           DESTINATION_BANK_RULE if name == "destination_bank" else "",
-                           item_rules, semantic_rule, quoted_name_rule,
-                           _STATUS_RULE if format_check is not None and current["status"] != "fillable"
-                           and check != "status_wrong" else "") if part]},
+            instructions={"question": spec.question, "field": claim, "rules": rules},
             criteria=spec.criteria,
         )
-        
     return VerificationQuestions(questions)
+
+
+def _claim(
+    path: str, check: str, meaning: str, current: dict, raw: dict | None,
+    format_check: dict | None, source_candidates: list[dict] | None,
+) -> dict:
+    """instructions.field: проверяемое поле или атрибут позиции с источниками и контекстом."""
+    claim = {
+        "path": path, "meaning": meaning,
+        "status": current["status"], "value": current["value"],
+        "evidence": raw["evidence"] if raw is not None else [{"message_id": mid} for mid in current["evidence"]],
+        "calculation": raw["calculation"] if raw is not None else None,
+        "derivation": current["derivation"],
+    }
+    if format_check is not None and (current["status"] == "fillable" or check == "status_wrong"):
+        claim["format_check"] = format_check
+    if source_candidates is not None and check in ("missing_supported", "unresolved_alternatives"):
+        claim["valid_source_candidates"] = source_candidates
+
+    if path.startswith("items["):
+        index = int(path.split("[", 1)[1].split("]", 1)[0])
+        attribute = path.rsplit(".", 1)[1]
+        claim["meaning"] = _ATTRIBUTE_MEANINGS[attribute]
+        claim["item"] = current["value"][index]
+        claim["value"] = claim["item"][attribute]
+        if attribute == "description" and claim["value"] is not None:
+            claim["item_index"] = index
+            claim["extracted_items"] = current["value"]
+        calculation_name = {"quantity": "quantity_calculation", "unit_price_rub": "unit_price_calculation"}.get(attribute)
+        claim["calculation"] = raw["value"][index].get(calculation_name) if raw is not None and calculation_name else None
+        claim.pop("derivation")
+    elif path == "items" and raw is not None and isinstance(raw["value"], list):
+        claim["item_calculations"] = [
+            {plan_name: item[plan_name] for plan_name in ("quantity_calculation", "unit_price_calculation")}
+            for item in raw["value"]
+        ]
+    return claim
+
+
+def _question_rules(path: str, check: str, invoice: bool, status: str, format_check: dict | None) -> list[str]:
+    """instructions.rules: правила поля, позиций, итога счёта, названий в кавычках и формата реквизита."""
+    name = field_root(path)
+    item_rules = _ITEMS_RULES if name == "items" else ""
+    semantic_rule = ""
+    if invoice:
+        semantic_rule = {"amount_rub": INVOICE_AMOUNT_RULE,
+                         "subject": INVOICE_SUBJECT_RULE, "items": ITEM_UNIT_RULE}.get(name, "")
+    if path.startswith("items["):
+        attribute = path.rsplit(".", 1)[-1]
+        item_rules = _ATTRIBUTE_RULES[attribute]
+        if attribute == "description" and check == "noncanonical":
+            item_rules = ITEM_DESCRIPTION_RULE  # правило формы, а не «форма не важна»
+        semantic_rule = ""
+
+    checks_quoted_name = name == "subject" or (
+        name == "items" and (path == "items" or path.endswith("].description"))
+    )
+    return [part for part in (
+        _FIELD_RULES.get(name), VAT_MODE_RULE if name == "vat_rate_percent" else "",
+        DESTINATION_BANK_RULE if name == "destination_bank" else "",
+        item_rules, semantic_rule, QUOTED_PRODUCT_NAME_RULE if checks_quoted_name else "",
+        _STATUS_RULE if format_check is not None and status != "fillable" and check != "status_wrong" else "",
+    ) if part]
 
 
 async def verify_fields(
@@ -688,8 +701,6 @@ async def verify_fields(
     fields: PreparedFields,
     client: DecisionModelClient,
     wrong_threshold: float = 0.8,
-    *,
-    debug: bool = False,
 ) -> list[Remark]:
     """Задаёт Jev вопросы по полям и возвращает проверки с оценкой не ниже порога."""
     if not 0 < wrong_threshold < 1:
@@ -710,10 +721,8 @@ async def verify_fields(
     if set(response.answers) != set(questions.root):
         raise VerificationError(f"{verifier} вернул неполный или неожиданный набор проверок")
 
-    if debug:
-        print(f"{verifier}: оценки ошибок, порог={wrong_threshold:.2f}:", flush=True)
-        for key, answer in response.answers.items():
-            print(f"  {key}: {answer.noul:.3f}", flush=True)
+    logger.debug("%s: оценки ошибок, порог=%.2f:%s", verifier, wrong_threshold,
+                 "".join(f"\n  {key}: {answer.noul:.3f}" for key, answer in response.answers.items()))
 
     return [
         Remark(*parse_check_key(key), score=answer.noul, verifier=verifier,

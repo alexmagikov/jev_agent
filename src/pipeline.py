@@ -1,5 +1,7 @@
 
+import logging
 from collections.abc import Callable
+from dataclasses import dataclass, field
 
 from pydantic import BaseModel
 
@@ -16,9 +18,8 @@ from src.schemas.document_schemas import (
     DocumentResult,
     DocumentValidation,
     ValidationIssue,
-    InvoiceResult,
     NoDocumentResult,
-    TransferResult,
+    RESULT_BY_TYPE,
     field_root,
 )
 from src.extraction import (
@@ -28,6 +29,9 @@ from src.extraction import (
 from src.llm import AsyncLLMExtractor, LLMError, LLMRateLimitError, LLMResponseError
 from src.verification import Remark, VerificationError, verify_fields
 from src.repairs import merge_repair, plan_repair, repair_roots
+
+
+logger = logging.getLogger(__name__)
 
 
 class DocumentTypeDecision(BaseModel):
@@ -91,7 +95,6 @@ async def process_document(
     *,
     max_attempts: int = 2,
     wrong_threshold: float = 0.8,
-    debug: bool = False,
     use_verifier: bool = True,
     allow_partial: bool = True,
 ) -> DocumentResult:
@@ -99,37 +102,27 @@ async def process_document(
 
     use_verifier включает внешнюю классификацию и смысловую проверку полей.
     """
-
-    if not 1 <= max_attempts <= 3 or not 0 < wrong_threshold < 1:
-        raise ValueError("Некорректные настройки числа попыток или порога")
-    if use_verifier and client is None:
-        raise ValueError("Для режима с верификатором нужен клиент")
-    try:
-        validate_messages(messages)
-    except ExtractionError as error:
-        raise PipelineError(f"{case_id}: {error}") from error
+    _check_inputs(case_id, messages, client, max_attempts=max_attempts,
+                  wrong_threshold=wrong_threshold, use_verifier=use_verifier)
 
     if use_verifier:
-        if debug:
-            print(f"[{case_id}] Классификация: запрос к {getattr(client, 'name', 'Decision model')}…", flush=True)
+        logger.debug("[%s] Классификация: запрос к %s…", case_id, getattr(client, "name", "Decision model"))
         decision = await classify_document(messages, client)
     else:
         classification_feedback: list[str] = []
         for attempt in range(1, max_attempts + 1):
-            if debug:
-                print(f"[{case_id}] Классификация LLM: попытка {attempt}/{max_attempts}…", flush=True)
+            logger.debug("[%s] Классификация LLM: попытка %d/%d…", case_id, attempt, max_attempts)
             try:
                 classification = await extractor.classify(messages, feedback=classification_feedback)
             except LLMResponseError as error:
                 classification_feedback = [str(error)]
-                if debug:
-                    print(f"[{case_id}] Замечания к классификации: {error}", flush=True)
+                logger.debug("[%s] Замечания к классификации: %s", case_id, error)
                 continue
             except LLMRateLimitError as error:
                 raise PipelineRateLimitError(f"{case_id}: {error}") from error
             except LLMError as error:
                 raise PipelineError(f"{case_id}: {error}") from error
-            
+
             decision = DocumentTypeDecision(
                 document_type=classification.document_type,
                 confidence=classification.confidence,
@@ -141,12 +134,27 @@ async def process_document(
                 f"{case_id}: классификация не прошла за {max_attempts} попытки: "
                 + "; ".join(classification_feedback)
             )
-        
-    return await process_selected_document(
+
+    return await _extract_and_verify(
         case_id, messages, decision, client, extractor,
-        max_attempts=max_attempts, wrong_threshold=wrong_threshold, debug=debug, use_verifier=use_verifier,
+        max_attempts=max_attempts, wrong_threshold=wrong_threshold, use_verifier=use_verifier,
         allow_partial=allow_partial,
     )
+
+
+def _check_inputs(
+    case_id: str, messages: list[DocumentMessage], client: DecisionModelClient | None, *,
+    max_attempts: int, wrong_threshold: float, use_verifier: bool,
+) -> None:
+    """Проверка входа на публичных точках пайплайна, до платных запросов."""
+    if not 1 <= max_attempts <= 3 or not 0 < wrong_threshold < 1:
+        raise ValueError("Некорректные настройки числа попыток или порога")
+    if use_verifier and client is None:
+        raise ValueError("Для режима с верификатором нужен клиент")
+    try:
+        validate_messages(messages)
+    except ExtractionError as error:
+        raise PipelineError(f"{case_id}: {error}") from error
 
 
 async def process_selected_document(
@@ -158,29 +166,70 @@ async def process_selected_document(
     *,
     max_attempts: int = 2,
     wrong_threshold: float = 0.8,
-    debug: bool = False,
     use_verifier: bool = True,
     allow_partial: bool = True,
     initial_proposal: ExtractionProposal | None = None,
     on_candidate: Callable[[ExtractionProposal, PreparedFields], None] | None = None,
 ) -> DocumentResult:
-    """Извлекает и ремонтирует документ; после исчерпания попыток сохраняет замечания.
+    """Извлекает и ремонтирует документ уже выбранного типа; после исчерпания попыток сохраняет замечания.
 
     Из всех кандидатов сохраняется лучший: прошедший Python, затем с меньшим
     числом непроверенных полей, при равенстве — более поздний.
     allow_partial=False оставляет строгий отказ для сравнительных аудитов.
     initial_proposal позволяет повторно проверить одного и того же кандидата.
     """
-    if not 1 <= max_attempts <= 3 or not 0 < wrong_threshold < 1:
-        raise ValueError("Некорректные настройки числа попыток или порога")
-    if use_verifier and client is None:
-        raise ValueError("Для режима с верификатором нужен клиент")
-    try:
-        validate_messages(messages)
-    except ExtractionError as error:
-        raise PipelineError(f"{case_id}: {error}") from error
-    if debug:
-        print(f"[{case_id}] Тип: {decision.document_type}, confidence={decision.confidence:.3f}", flush=True)
+    _check_inputs(case_id, messages, client, max_attempts=max_attempts,
+                  wrong_threshold=wrong_threshold, use_verifier=use_verifier)
+    return await _extract_and_verify(
+        case_id, messages, decision, client, extractor,
+        max_attempts=max_attempts, wrong_threshold=wrong_threshold, use_verifier=use_verifier,
+        allow_partial=allow_partial, initial_proposal=initial_proposal, on_candidate=on_candidate,
+    )
+
+
+@dataclass
+class _RepairPlan:
+    """Что чинить на следующей попытке: базовый кандидат, его проверенные поля и пути ремонта."""
+
+    base: ExtractionProposal | None = None
+    checked_fields: PreparedFields | None = None
+    roots: list[str] = field(default_factory=list)
+    paths: list[str] = field(default_factory=list)
+
+    def after_python_error(self, proposal: ExtractionProposal, error: ExtractionError) -> None:
+        self.checked_fields = None  # Этот кандидат ещё не прошёл Python целиком.
+        if error.repair_paths:
+            self.paths = plan_repair(proposal, list(error.repair_paths))
+            self.roots = repair_roots(self.paths)
+            self.base = proposal.model_copy(deep=True)
+        else:
+            # Без надёжного пути безопасного точечного ремонта нет.
+            self.base = None
+            self.paths, self.roots = [], []
+
+    def after_remarks(self, proposal: ExtractionProposal, fields: PreparedFields, remarks: list[Remark]) -> None:
+        self.paths = plan_repair(proposal, [remark.path for remark in remarks])
+        self.roots = repair_roots(self.paths)
+        self.base = proposal.model_copy(deep=True)
+        self.checked_fields = fields.model_copy(deep=True)
+
+
+async def _extract_and_verify(
+    case_id: str,
+    messages: list[DocumentMessage],
+    decision: DocumentTypeDecision,
+    client: DecisionModelClient | None,
+    extractor: AsyncLLMExtractor,
+    *,
+    max_attempts: int,
+    wrong_threshold: float,
+    use_verifier: bool,
+    allow_partial: bool,
+    initial_proposal: ExtractionProposal | None = None,
+    on_candidate: Callable[[ExtractionProposal, PreparedFields], None] | None = None,
+) -> DocumentResult:
+    """Попытки извлечения и ремонта; вход уже проверен _check_inputs."""
+    logger.debug("[%s] Тип: %s, confidence=%.3f", case_id, decision.document_type, decision.confidence)
     if decision.document_type == "none":
         return NoDocumentResult(
             case_id=case_id,
@@ -192,10 +241,7 @@ async def process_selected_document(
         )
 
     feedback: list[str] = []
-    repair_base: ExtractionProposal | None = None
-    repair_checked_fields: PreparedFields | None = None
-    repair_fields: list[str] = []
-    repair_paths: list[str] = []
+    plan = _RepairPlan()
     validation_failures = []
     failure_reason = "semantic_rejection"
     # Кандидат, его поля после Python (None — не прошёл) и замечания верификатора.
@@ -203,26 +249,14 @@ async def process_selected_document(
     response_issues: list[ValidationIssue] = []
 
     for attempt in range(1, max_attempts + 1):
-        if debug:
-            print(f"[{case_id}] Попытка {attempt}/{max_attempts}: извлечение LLM…", flush=True)
+        logger.debug("[%s] Попытка %d/%d: извлечение LLM…", case_id, attempt, max_attempts)
         proposal = None
         try:
             if attempt == 1 and initial_proposal is not None:
                 proposal = initial_proposal.model_copy(deep=True)
-            elif repair_base is None:
-                proposal = await extractor.extract(messages, decision.document_type, feedback=feedback)
             else:
-                reply = await extractor.extract(
-                    messages, decision.document_type, feedback=feedback,
-                    previous_proposal=repair_base, repair_fields=repair_fields, repair_paths=repair_paths,
-                    previous_checked_fields=repair_checked_fields,
-                )
-                # Защита уже проверенных полей, даже если LLM проигнорировала область ремонта.
-                proposal = merge_repair(repair_base, reply, repair_paths)
-
-            if debug:
-                print(f"[{case_id}] Python: проверка источников, форматов и расчётов…", flush=True)
-
+                proposal = await _next_candidate(extractor, messages, decision.document_type, feedback, plan)
+            logger.debug("[%s] Python: проверка источников, форматов и расчётов…", case_id)
             response_issues = []
             fields = prepare_fields(proposal, messages, decision.document_type)
             if on_candidate is not None:
@@ -231,7 +265,6 @@ async def process_selected_document(
             validation_failures.append({"attempt": attempt,
                                         "stage": "llm_response" if isinstance(error, LLMResponseError) else "python_validation",
                                         "code": error.code})
-            
             failure_reason = "invalid_extraction"
             feedback = [str(error)]
             if isinstance(error, LLMResponseError):
@@ -239,97 +272,104 @@ async def process_selected_document(
                     path="", stage="llm_response", code=error.code,
                     message="Повторный ответ LLM не удалось применить. Сохранён лучший из прежних кандидатов.",
                 ))
-
             if isinstance(error, ExtractionError) and proposal is not None:
                 candidates.append((proposal.model_copy(deep=True), None, []))
-                repair_checked_fields = None  # Этот кандидат ещё не прошёл Python целиком.
-                if error.repair_paths:
-                    repair_paths = plan_repair(proposal, list(error.repair_paths))
-                    repair_fields = repair_roots(repair_paths)
-                    repair_base = proposal.model_copy(deep=True)
-                else:
-                    # Без надёжного пути безопасного точечного ремонта нет.
-                    repair_base = None
-                    repair_paths, repair_fields = [], []
-
-            if debug:
-                print(f"[{case_id}] Замечания LLM/Python: {feedback[0]}", flush=True)
+                plan.after_python_error(proposal, error)
+            logger.debug("[%s] Замечания LLM/Python: %s", case_id, feedback[0])
             continue
         except LLMRateLimitError as error:
             raise PipelineRateLimitError(f"{case_id}: {error}") from error
         except LLMError as error:
             raise PipelineError(f"{case_id}: {error}") from error
-        
-        remarks: list[Remark] = []
+
         failure_reason = "semantic_rejection"
+        remarks: list[Remark] = []
         if use_verifier:
             assert client is not None
-            try:
-                if debug:
-                    print(f"[{case_id}] {getattr(client, 'name', 'Decision model')}: проверка полей…", flush=True)
-
-                remarks = await verify_fields(
-                    messages,
-                    decision.document_type,
-                    proposal,
-                    fields,
-                    client,
-                    wrong_threshold,
-                    debug=debug,
-                )
-            except DecisionModelRateLimitError as error:
-                raise PipelineRateLimitError(f"{case_id}: {error}") from error
-            except (VerificationError, DecisionModelError) as error:
-                raise PipelineError(f"{case_id}: {error}") from error
-
-            if debug:
-                print(f"[{case_id}] Замечания {getattr(client, 'name', 'Decision model')}:", flush=True)
-                for remark in remarks:
-                    print(f"  {remark}", flush=True)
-                if not remarks:
-                    print("  нет", flush=True)
-
+            remarks = await _verify(case_id, messages, decision.document_type, proposal, fields, client, wrong_threshold)
         feedback = [str(remark) for remark in remarks]
         if not remarks:
-            result_model = InvoiceResult if decision.document_type == "invoice_draft" else TransferResult
-            return result_model(
-                case_id=case_id, document_type=decision.document_type,
-                confidence=decision.confidence, fields=fields,
-                validation=DocumentValidation(semantic_status="passed" if use_verifier else "not_run"),
-            )
-        
+            return _document_result(case_id, decision, fields, DocumentValidation(
+                semantic_status="passed" if use_verifier else "not_run"))
+
         candidates.append((proposal.model_copy(deep=True), fields.model_copy(deep=True), list(remarks)))
         try:
-            repair_paths = plan_repair(proposal, [remark.path for remark in remarks])
+            plan.after_remarks(proposal, fields, remarks)
         except ValueError as error:
             raise PipelineError(f"{case_id}: проверка вернула неизвестное поле для исправления") from error
-        repair_fields = repair_roots(repair_paths)
-        repair_base = proposal.model_copy(deep=True)
-        repair_checked_fields = fields.model_copy(deep=True)
 
     if allow_partial:
-        best = None
-        for index, (proposal, checked_fields, remarks) in enumerate(candidates):
-            reviewed = _review_candidate(proposal, checked_fields, remarks, messages, decision.document_type)
-            if reviewed is not None:
-                rank = (checked_fields is not None, -len(reviewed[1].unverified_fields), index)
-                if best is None or rank > best[0]:
-                    best = (rank, reviewed)
+        best = _best_candidate(candidates, messages, decision.document_type)
         if best is not None:
-            fields, validation = best[1]
+            fields, validation = best
             validation.issues.extend(response_issues)
             if validation.issues:
                 validation.status = "needs_review"
-            result_model = InvoiceResult if decision.document_type == "invoice_draft" else TransferResult
-            return result_model(
-                case_id=case_id, document_type=decision.document_type,
-                confidence=decision.confidence, fields=fields, validation=validation,
-            )
+            return _document_result(case_id, decision, fields, validation)
 
     summary = "; ".join(feedback)
     raise PipelineRejectionError(
         f"{case_id}: проверки не пройдены за {max_attempts} попытки: {summary}",
         failure_reason=failure_reason, validation_failures=validation_failures,
+    )
+
+
+async def _next_candidate(
+    extractor: AsyncLLMExtractor, messages: list[DocumentMessage], document_type: str,
+    feedback: list[str], plan: _RepairPlan,
+) -> ExtractionProposal:
+    """Новое извлечение или ремонт по плану; проверенные поля вне плана не меняются."""
+    if plan.base is None:
+        return await extractor.extract(messages, document_type, feedback=feedback)
+    reply = await extractor.extract(
+        messages, document_type, feedback=feedback,
+        previous_proposal=plan.base, repair_fields=plan.roots, repair_paths=plan.paths,
+        previous_checked_fields=plan.checked_fields,
+    )
+    # Защита уже проверенных полей, даже если LLM проигнорировала область ремонта.
+    return merge_repair(plan.base, reply, plan.paths)
+
+
+async def _verify(
+    case_id: str, messages: list[DocumentMessage], document_type: str, proposal: ExtractionProposal,
+    fields: PreparedFields, client: DecisionModelClient, wrong_threshold: float,
+) -> list[Remark]:
+    """Смысловая проверка Jev; ошибки сервиса превращаются в ошибки пайплайна."""
+    verifier = getattr(client, "name", "Decision model")
+    try:
+        logger.debug("[%s] %s: проверка полей…", case_id, verifier)
+        remarks = await verify_fields(messages, document_type, proposal, fields, client, wrong_threshold)
+    except DecisionModelRateLimitError as error:
+        raise PipelineRateLimitError(f"{case_id}: {error}") from error
+    except (VerificationError, DecisionModelError) as error:
+        raise PipelineError(f"{case_id}: {error}") from error
+    logger.debug("[%s] Замечания %s:%s", case_id, verifier,
+                 "".join(f"\n  {remark}" for remark in remarks) or " нет")
+    return remarks
+
+
+def _best_candidate(
+    candidates: list[tuple[ExtractionProposal, PreparedFields | None, list[Remark]]],
+    messages: list[DocumentMessage], document_type: str,
+) -> tuple[PreparedFields, DocumentValidation] | None:
+    """Лучший кандидат для needs_review: прошедший Python, с меньшим числом
+    непроверенных полей, при равенстве — более поздний."""
+    best = None
+    for index, (proposal, checked_fields, remarks) in enumerate(candidates):
+        reviewed = _review_candidate(proposal, checked_fields, remarks, messages, document_type)
+        if reviewed is not None:
+            rank = (checked_fields is not None, -len(reviewed[1].unverified_fields), index)
+            if best is None or rank > best[0]:
+                best = (rank, reviewed)
+    return best[1] if best is not None else None
+
+
+def _document_result(
+    case_id: str, decision: DocumentTypeDecision, fields: PreparedFields, validation: DocumentValidation,
+) -> DocumentResult:
+    return RESULT_BY_TYPE[decision.document_type](
+        case_id=case_id, document_type=decision.document_type,
+        confidence=decision.confidence, fields=fields, validation=validation,
     )
 
 
