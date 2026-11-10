@@ -12,7 +12,7 @@ from pathlib import Path
 
 from scripts.build_dataset_v2 import example, fill, item, unfilled
 from src.cases.document_type import NONE_REASON_TEXT
-from src.extraction import _invalid_format, validate_messages
+from src.extraction import invalid_format, validate_messages
 from src.main import InputCase, LABEL_ADAPTER
 
 DATA = Path(__file__).resolve().parents[1] / "data"
@@ -137,7 +137,7 @@ def scenarios():
             ("user", "Для архива: в прошлом году настройку тоже включали в скидку. В этом заказе действует согласование из предыдущего сообщения."),
         ], tags=("discount_scope", "whole_line_fee", "historical_decoy", "arithmetic"),
             recipient_name=fill("ООО Техзона", "m1"), subject=fill("Комплектация мастерской", "m1"),
-            items=fill([item("кронштейн", 3, "шт.", 260), item("зажим", 4, "шт.", 180), item("настройка")], "m1", "m3"),
+            items=fill([item("кронштейн", 3, "шт.", 260), item("зажим", 4, "шт.", 180), item("настройка всей поставки")], "m1", "m3"),
             amount_rub=fill(3250, "m1", "m3", derivation="(3 * 260 + 4 * 180) * (1 - 10 / 100) + 1900 = 3250 RUB"),
             vat_mode=fill("no_vat", "m1")),
 
@@ -463,7 +463,7 @@ def build_contents():
                 raise ValueError("Источник не является сообщением пользователя: " + parsed.case_id)
             if value["status"] == "missing" and value["evidence"] or value["status"] != "missing" and not value["evidence"]:
                 raise ValueError("Источники не соответствуют статусу: " + parsed.case_id)
-            if value["status"] == "fillable" and _invalid_format(name, value["value"]):
+            if value["status"] == "fillable" and invalid_format(name, value["value"]):
                 raise ValueError("Некорректный формат эталона: " + parsed.case_id + "." + name)
     for group in ("ordinary", "tricky"):
         if Counter(label["document_type"] for _, label, meta in records if meta["group"] == group) != {

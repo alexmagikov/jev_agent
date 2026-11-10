@@ -3,8 +3,9 @@
   "name": "challenge",
   "synthetic": true,
   "authorship": "assistant_authored_before_model_runs",
-  "human_reviewed": false,
-  "annotation_status": "draft_for_human_review",
+  "human_reviewed": true,
+  "annotation_status": "spot_checked_by_human",
+  "human_review": "2026-11-04, до запуска на test: выборочная проверка 36 test-кейсов (по 2 на семейство) по .scratch/challenge_review.md; замечаний нет. Остальные эталоны вычислены генератором.",
   "case_count": 104,
   "splits": {
     "dev": 34,

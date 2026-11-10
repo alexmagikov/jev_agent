@@ -13,6 +13,14 @@
 | Стресс-выборка hard30 | `cases_hard30.jsonl` | `labels_hard30.jsonl` | 30 | 17 / 13 |
 | Новые длинные tricky35 | `cases_tricky35.jsonl` | `labels_tricky35.jsonl` | 35 | 18 / 17 |
 | Новая смешанная evaluation50 | `cases_evaluation50.jsonl` | `labels_evaluation50.jsonl` | 50 | 0 / 50 |
+| Сложная challenge | `cases_challenge.jsonl` | `labels_challenge.jsonl` | 104 | 34 / 70 |
+
+Итоговые эксперименты выполнены на evaluation50 и challenge; остальные наборы
+использовались при разработке и остаются регрессионными данными для тестов.
+Challenge — 104 диалога H001–H104 с поправками, отменами, частичными скидками,
+реквизитами продавца рядом с реквизитами покупателя и длинными разговорами.
+Описание семейств: [challenge.md](challenge.md); манифест — `challenge.manifest.json`.
+Сборка: `uv run --locked python -m scripts.build_challenge_dataset`.
 
 Evaluation50 — 25 обычных и 25 сложных новых диалогов E001–E050, без точных
 дубликатов существующих диалогов. Обе группы имеют одинаковый состав: 12 счетов,

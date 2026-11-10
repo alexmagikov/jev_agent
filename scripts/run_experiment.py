@@ -23,7 +23,7 @@ from src.main import DEFAULT_INPUT_PATH, DEFAULT_LABELS_PATH, load_cases, load_l
 from src.metrics import calculate_metrics
 from src.pipeline import PipelineError, process_document
 from src.request_budget import APICallBudget, APICallBudgetError, BudgetedDecisionModel, BudgetedExtractor
-from src.run_artifacts import RunArtifacts, _write_text_atomic, input_fingerprint, public_settings
+from src.run_artifacts import RunArtifacts, write_text_atomic, input_fingerprint, public_settings
 from src.settings import DecisionModelSettings, LLMSettings, PipelineSettings
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,7 +50,7 @@ class Plan:
 
 
 def _json(path, value):
-    _write_text_atomic(json.dumps(value, ensure_ascii=False, indent=2) + "\n", path)
+    write_text_atomic(json.dumps(value, ensure_ascii=False, indent=2) + "\n", path)
 
 
 def prepare_plan(args):
@@ -271,6 +271,7 @@ async def run_experiment(args):
         print(json.dumps(preview, ensure_ascii=False, indent=2))
         print("Это план без запросов. Для запуска используйте --live. Лимиты вызовов не являются денежным потолком.")
         return None
+    
     assert_unchanged(plan)
     root = args.output_dir or Path("experiments") / (
         datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ") + "-" + uuid4().hex[:8])

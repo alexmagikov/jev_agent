@@ -10,7 +10,7 @@ from collections import Counter
 from pathlib import Path
 
 from scripts.build_dataset_v2 import example, fill, item, unfilled
-from src.extraction import _invalid_format, validate_messages
+from src.extraction import invalid_format, validate_messages
 from src.main import InputCase, LABEL_ADAPTER
 
 
@@ -708,7 +708,7 @@ def build_contents():
         for name, field in label["fields"].items():
             if not set(field["evidence"]) <= user_ids:
                 raise ValueError("Непользовательский источник: " + parsed.case_id)
-            if field["status"] == "fillable" and _invalid_format(name, field["value"]):
+            if field["status"] == "fillable" and invalid_format(name, field["value"]):
                 raise ValueError("Неверный формат эталона: " + parsed.case_id + "." + name)
     encode = lambda rows: "".join(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n" for row in rows)
     lengths = [sum(len(m["text"]) for m in case["messages"]) for case in cases]

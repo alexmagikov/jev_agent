@@ -67,30 +67,37 @@ def _run_directory(experiment: Path, phase: dict) -> Path:
     return experiment / f"round-{phase['round']:03d}" / phase["mode"] / "predictions.runs" / saved.name
 
 
-def case_outcomes(experiment: Path) -> tuple[dict, dict, dict, set]:
+def case_outcomes(experiment: Path) -> tuple[dict, dict, dict, set, dict]:
+    """Правильность документа и «тихие» ошибки (принят без проверки, но неверен) по раундам."""
     report = json.loads((experiment / "report.json").read_text(encoding="utf-8"))
     config = json.loads((experiment / "config.json").read_text(encoding="utf-8"))
     labels = {row["case_id"]: row for row in (json.loads(line) for line in
               (experiment / "labels.jsonl").read_text(encoding="utf-8").splitlines() if line.strip())}
     outcomes = {mode: {case_id: [False] * config["rounds"] for case_id in labels} for mode in MODES}
+    silent = {mode: {case_id: [False] * config["rounds"] for case_id in labels} for mode in MODES}
     api_errors = set()
     for phase in report["phases"]:
         if phase["mode"] in MODES and phase.get("run_directory"):
             bundle = load_run(_run_directory(experiment, phase))
             for row in bundle["predictions"]:
-                outcomes[phase["mode"]][row["case_id"]][phase["round"] - 1] = exact_document(labels[row["case_id"]], row)
+                correct = exact_document(labels[row["case_id"]], row)
+                accepted = (row.get("validation") or {}).get("status") == "passed"
+                outcomes[phase["mode"]][row["case_id"]][phase["round"] - 1] = correct
+                silent[phase["mode"]][row["case_id"]][phase["round"] - 1] = accepted and not correct
             api_errors |= {error["case_id"] for error in bundle["errors"] if error.get("kind") == "api_error"}
-    return outcomes, labels, report, api_errors
+    return outcomes, labels, report, api_errors, silent
 
 
-def _difference(outcomes: dict, case_ids: list[str]) -> dict:
+def _difference(outcomes: dict, case_ids: list[str], *, lower_is_better: bool = False) -> dict:
     shares = {mode: [sum(outcomes[mode][cid]) / len(outcomes[mode][cid]) for cid in case_ids] for mode in MODES}
     estimate, low, high = bootstrap_difference(shares["full"], shares["llm-only"])
-    return {"estimate": estimate, "ci95": [low, high], "verdict": verdict(low, high)}
+    # Для тихих ошибок меньше — лучше: интервал ниже нуля означает, что full лучше.
+    decision = verdict(-high, -low) if lower_is_better else verdict(low, high)
+    return {"estimate": estimate, "ci95": [low, high], "verdict": decision}
 
 
 def analyze(experiment: Path, manifest: Path | None = None) -> dict:
-    outcomes, labels, report, api_errors = case_outcomes(experiment)
+    outcomes, labels, report, api_errors, silent = case_outcomes(experiment)
     excluded = sorted(api_errors)
     case_ids = [case_id for case_id in labels if case_id not in api_errors]
     if not case_ids:
@@ -108,6 +115,11 @@ def analyze(experiment: Path, manifest: Path | None = None) -> dict:
                            "p_value": mcnemar_exact(full_only, llm_only_only)},
         "pass_hat_k": {"k": rounds, **{mode: pass_hat_k([outcomes[mode][cid] for cid in case_ids], rounds)
                                        for mode in MODES}},
+        "silent_errors": {
+            "definition": "document accepted without review (validation passed) but not exactly correct",
+            "rate": {mode: sum(sum(silent[mode][cid]) for cid in case_ids) / (len(case_ids) * rounds) for mode in MODES},
+            "difference": _difference(silent, case_ids, lower_is_better=True),
+        },
         "bootstrap": {"resamples": RESAMPLES, "seed": SEED, "unit": "case"},
     }
     # Подгруппы — только описательно, без выводов о значимости.
@@ -115,8 +127,10 @@ def analyze(experiment: Path, manifest: Path | None = None) -> dict:
     manifest = manifest or ROOT / "data" / "evaluation50.manifest.json"
     if manifest.exists():
         for item in json.loads(manifest.read_text(encoding="utf-8"))["cases"]:
-            if item["case_id"] in case_ids:
-                groups.setdefault(item["group"], []).append(item["case_id"])
+            # evaluation50 хранит группу в group, challenge — семейство первым тегом.
+            group = item.get("group") or (item.get("tags") or [None])[0]
+            if item["case_id"] in case_ids and group:
+                groups.setdefault(group, []).append(item["case_id"])
     for cid in case_ids:
         groups.setdefault(labels[cid]["document_type"], []).append(cid)
     result["subgroups_descriptive"] = {name: {"cases": len(ids), **_difference(outcomes, ids)}
@@ -149,6 +163,10 @@ def main(argv=None):
     mc = result["mcnemar_round1"]
     print(f"Макнемар (раунд 1): только full верно — {mc['full_only']}, только llm-only — {mc['llm_only_only']}, "
           f"p = {mc['p_value']:.3f}")
+    se = result["silent_errors"]
+    print("Тихие ошибки (принят без проверки, но неверен): " + ", ".join(f"{m} {se['rate'][m]:.1%}" for m in MODES)
+          + f"; разница {se['difference']['estimate']:+.1%}, 95% ДИ [{se['difference']['ci95'][0]:+.1%}; "
+          f"{se['difference']['ci95'][1]:+.1%}] → {se['difference']['verdict']}")
     ph = result["pass_hat_k"]
     print(f"pass^{ph['k']}: llm-only {ph['llm-only']:.1%}, full {ph['full']:.1%}")
     for name, group in result["subgroups_descriptive"].items():

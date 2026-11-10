@@ -1,4 +1,4 @@
-"""Парный аудит Jeff/CLM/Jev/Laya: общий ответ LLM, реальные исправления, неизменные метрики."""
+"""Парный аудит Jev: общий ответ LLM, реальные исправления, неизменные метрики."""
 
 import argparse
 import asyncio
@@ -13,22 +13,26 @@ from pydantic import ValidationError
 from typesafe_sdk import AsyncTypeSafeClient, TypeSafeError, TypeSafeAPIError, TypeSafeAPIConnectionError
 
 from src.cases.document_type import NONE_REASON_TEXT
-from src.client import DecisionModelError, DecisionUsage, decision_sdk_options, clm_sdk_options, jeff_sdk_options, laya_sdk_options, laya_request_options, prepare_clm_questions
+from src.client import DecisionModelError, DecisionUsage, decision_sdk_options
 from src.extraction import ExtractionProposal, prepare_fields
 from src.detection_metrics import calculate_detection_metrics, calculate_field_outcomes, print_detection_metrics, print_field_outcomes
 from src.llm import LLMUsage, LLMError, LLMResponseError, LLMRateLimitError, LLMUnavailableError, build_extraction_prompt
 from src.repairs import merge_repair
 from src.request_budget import APICallBudget, APICallBudgetError as AuditBudgetError, BudgetedExtractor
-from src.schemas.document_schemas import InvoiceFields, TransferFields
+from src.schemas.document_schemas import FIELDS_BY_TYPE, field_root
 from src.main import DEFAULT_INPUT_PATH, DEFAULT_LABELS_PATH, estimate_usage_costs, load_cases, load_labels, print_acceptance_metrics
 from src.metrics import AcceptanceMetrics, calculate_metrics, field_matches
 from src.pipeline import DocumentTypeDecision, PipelineError, PipelineRejectionError, process_selected_document
-from src.settings import CLMSettings, JeffSettings, DecisionModelSettings, LayaSettings, LLMSettings, PipelineSettings
-from src.verification import VerificationError
+from src.settings import DecisionModelSettings, LLMSettings, PipelineSettings
+from src.verification import VerificationError, parse_check_key
 
 
 class AuditResumeError(ValueError):
     """Безопасное объяснение несовместимости трассы, без ответов API и реквизитов."""
+
+
+class AuditInputError(ValueError):
+    """Ошибка в аргументах запуска: текст безопасен и показывается пользователю."""
 
 
 def usage_snapshot(client):
@@ -182,9 +186,8 @@ def service_stop(error):
 class AuditDecisionModel:
     name = "Decision model"
 
-    def __init__(self, sdk, *, request_options=None):
+    def __init__(self, sdk):
         self.sdk = sdk
-        self.request_options = request_options or {}
         self.usage = DecisionUsage()
         self.models = set()
 
@@ -196,16 +199,12 @@ class AuditDecisionModel:
     def output_tokens(self):
         return self.usage.output_tokens
 
-    def prepare_questions(self, questions):
-        return questions
-
     async def ainvoke(self, state, questions, response_model):
         self.usage.sdk_calls += 1
         try:
             response = await self.sdk.system_one(
                 state=state.model_dump(mode="json"),
-                questions=self.prepare_questions(questions.model_dump(mode="json")),
-                **self.request_options,
+                questions=questions.model_dump(mode="json"),
             )
         except TypeSafeAPIError:
             self.usage.error_responses += 1  # отказ сервера не тарифицируется
@@ -219,24 +218,6 @@ class AuditDecisionModel:
             self.usage.output_tokens += counts[1]
         self.models.add(response.model)
         return response_model.model_validate(response.model_dump(mode="json"))
-
-
-class AuditCLM(AuditDecisionModel):
-    name = "CLM"
-
-    def prepare_questions(self, questions):
-        return prepare_clm_questions(questions)
-
-
-class AuditJeff(AuditDecisionModel):
-    name = "Jeff"
-
-
-class AuditLaya(AuditDecisionModel):
-    name = "Laya"
-
-    def __init__(self, sdk, settings):
-        super().__init__(sdk, request_options=laya_request_options(settings))
 
 
 async def audit_cases(cases, extractor, jev, *, max_jev_calls=10, max_attempts=2,
@@ -270,6 +251,7 @@ async def audit_cases(cases, extractor, jev, *, max_jev_calls=10, max_attempts=2
         stage = "baseline"
         outage = False
         seed = None
+        recheck_saved = False
         for key in ("error_type", "failure_reason", "validation_failures"):
             record.pop(key, None)
         record["status"] = "started"
@@ -293,8 +275,13 @@ async def audit_cases(cases, extractor, jev, *, max_jev_calls=10, max_attempts=2
             emit(record)
 
         def capture_candidate(proposal, fields):
-            record["candidates"].append({"proposal": proposal.model_dump(mode="json"),
-                                         "checked_fields": fields.model_dump(mode="json")})
+            nonlocal recheck_saved
+            if recheck_saved:
+                # Первый кандидат resume уже записан: повторная запись сдвинула бы candidate_index.
+                recheck_saved = False
+            else:
+                record["candidates"].append({"proposal": proposal.model_dump(mode="json"),
+                                             "checked_fields": fields.model_dump(mode="json")})
             record["pending_extraction"] = None
             emit(record)
 
@@ -318,7 +305,7 @@ async def audit_cases(cases, extractor, jev, *, max_jev_calls=10, max_attempts=2
                     if request.get("previous_proposal") is not None:
                         request["previous_proposal"] = ExtractionProposal.model_validate(request["previous_proposal"])
                     if request.get("previous_checked_fields") is not None:
-                        fields_type = InvoiceFields if document_type == "invoice_draft" else TransferFields
+                        fields_type = FIELDS_BY_TYPE[document_type]
                         request["previous_checked_fields"] = fields_type.model_validate(request["previous_checked_fields"])
                 else:
                     self.replay = None
@@ -344,8 +331,6 @@ async def audit_cases(cases, extractor, jev, *, max_jev_calls=10, max_attempts=2
 
             async def ainvoke(self, state, questions, response_model):
                 serialized = questions.model_dump(mode="json")
-                if hasattr(jev, "prepare_questions"):
-                    serialized = jev.prepare_questions(serialized)
                 previous, self.saved_round = self.saved_round, None
                 if previous and previous.get("questions") == serialized and "answers" in previous:
                     # Ответ уже получен до прерывания: повторно не сэмплируем решение.
@@ -368,7 +353,12 @@ async def audit_cases(cases, extractor, jev, *, max_jev_calls=10, max_attempts=2
                             raise AuditBudgetError("Бюджет API-вызовов исчерпан") from None
                         await asyncio.sleep(min(2 ** retry, 30))
                         continue
-                    entry["answers"] = response.model_dump(mode="json")["answers"]
+                    answers = response.model_dump(mode="json")["answers"]
+                    if set(answers) == set(serialized):
+                        entry["answers"] = answers
+                    else:
+                        # Негодный набор ответов — не вердикт: resume спросит заново, метрики его не возьмут.
+                        entry["error_type"] = "VerificationError"
                     emit(record)
                     return response
 
@@ -415,6 +405,8 @@ async def audit_cases(cases, extractor, jev, *, max_jev_calls=10, max_attempts=2
                     raise PipelineRejectionError("Repair attempts exhausted", failure_reason="invalid_extraction", validation_failures=[])
                 latest = record.get("enhanced_proposal") or (
                     record["candidates"][-1]["proposal"] if record["candidates"] else record["seed_proposal"])
+                recheck_saved = (pending is None and bool(record["candidates"])
+                                 and latest == record["candidates"][-1]["proposal"])
                 after = await process_selected_document(
                     case.case_id, case.messages, decision, LoggedJev(), LoggedExtractor("enhanced"),
                     initial_proposal=None if pending is not None else ExtractionProposal.model_validate(latest),
@@ -626,13 +618,14 @@ def build_report(records, labels, *, _include_quality=True):
             if not correct(record["after"], target, name):
                 scores = {key: answer["noul"] for round_ in record["jev_rounds"][-1:]
                           for key, answer in round_.get("answers", {}).items()
-                          if key.split("::", 1)[0].split("[", 1)[0] == name}
+                          if field_root(parse_check_key(key)[0]) == name}
                 report["remaining_mismatches"].append({
                     "case_id": record["case_id"], "field": name,
                     "permitted_alias_only": correct(record["after"], target, name, allow_aliases=True),
                     "max_error_probability": max(scores.values(), default=None), "checks": scores,
                     **({"attribute_mismatches": attribute_mismatches} if name == "items" else {}),
                 })
+                
     delta = report["field_changes"]["corrected"] - report["field_changes"]["regressed"]
     report["conclusion"] = ("incomplete" if report["incomplete_cases"] or not records else
                             "observed_improvement_not_statistical_proof" if delta > 0 else
@@ -720,7 +713,7 @@ def build_parser():
     operation.add_argument("--live", action="store_true", help="Разрешить платные API-запросы")
     operation.add_argument("--report-trace", type=Path,
                            help="Восстановить все последние записи трассы по --labels, без API; --limit не применяется")
-    parser.add_argument("--verifier", choices=("jeff", "clm", "jev", "laya", "decision"), default="jeff")
+    parser.add_argument("--verifier", choices=("jev", "decision"), default="decision")
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT_PATH)
     parser.add_argument("--labels", type=Path, default=DEFAULT_LABELS_PATH)
     parser.add_argument("--split", choices=("dev", "test", "all"), default="dev")
@@ -747,38 +740,22 @@ async def run_live(args):
     if args.case_ids:
         missing = set(args.case_ids) - {case.case_id for case in cases}
         if missing:
-            raise ValueError("В выбранной выборке нет кейсов: " + ", ".join(sorted(missing)))
+            raise AuditInputError("В выбранной выборке нет кейсов: " + ", ".join(sorted(missing)))
         cases = [case for case in cases if case.case_id in set(args.case_ids)]
     cases = cases[:args.limit]
     if not cases:
-        raise ValueError("В выбранной выборке нет кейсов")
+        raise AuditInputError("В выбранной выборке нет кейсов")
     labels = load_labels(args.labels, {case.case_id for case in cases})  # Только локальный scoring.
     if args.allow_missing_seeds and not args.seed_trace:
-        raise ValueError("--allow-missing-seeds требует --seed-trace")
+        raise AuditInputError("--allow-missing-seeds требует --seed-trace")
     initial_seeds = (load_initial_seeds(args.seed_trace, cases, allow_missing=args.allow_missing_seeds)
                      if args.seed_trace else None)
     resume_records = load_resume_records(args.resume_trace, cases) if args.resume_trace else None
     llm_settings, pipeline = LLMSettings(), PipelineSettings()
-    if args.verifier == "laya":
-        decision_settings = LayaSettings()
-        sdk_options = laya_sdk_options(decision_settings, max_retries=0)
-        verifier_type, verifier_name = AuditLaya, "Laya"
-        wrong_threshold = decision_settings.wrong_threshold
-    elif args.verifier == "jeff":
-        decision_settings = JeffSettings()
-        sdk_options = jeff_sdk_options(decision_settings, max_retries=0)
-        verifier_type, verifier_name = AuditJeff, "Jeff"
-        wrong_threshold = decision_settings.wrong_threshold
-    elif args.verifier == "clm":
-        decision_settings = CLMSettings()
-        sdk_options = clm_sdk_options(decision_settings, max_retries=0)
-        verifier_type, verifier_name = AuditCLM, "CLM"
-        wrong_threshold = decision_settings.wrong_threshold
-    else:
-        decision_settings = DecisionModelSettings()
-        sdk_options = decision_sdk_options(decision_settings, max_retries=0)
-        verifier_type, verifier_name = AuditDecisionModel, decision_settings.model
-        wrong_threshold = pipeline.wrong_threshold
+    decision_settings = DecisionModelSettings()
+    sdk_options = decision_sdk_options(decision_settings, max_retries=0)
+    verifier_name = decision_settings.model
+    wrong_threshold = pipeline.wrong_threshold
     # BudgetedExtractor считает каждый HTTP-запрос, включая восстановление после 429.
     llm_settings = audit_llm_settings(llm_settings, api_retries=args.api_retries)
     configuration = {
@@ -808,7 +785,7 @@ async def run_live(args):
         "endpoint_options_sha256": hashlib.sha256(json.dumps({
             "llm": llm_settings.base_url, "verifier": decision_settings.base_url,
             "protocol": llm_settings.api_protocol, "response_format": llm_settings.response_format,
-            "request_options": laya_request_options(decision_settings) if args.verifier == "laya" else {},
+            "request_options": {},  # ключ сохранён: от него зависит хеш для --resume-trace старых трасс
         }, sort_keys=True).encode()).hexdigest(),
     }
     resume_config_verified = False
@@ -840,8 +817,7 @@ async def run_live(args):
             trace.flush()
 
         async with AsyncTypeSafeClient(**sdk_options) as sdk:
-            jev = (verifier_type(sdk, decision_settings) if args.verifier == "laya"
-                   else verifier_type(sdk))
+            jev = AuditDecisionModel(sdk)
             jev.name = verifier_name
             async with BudgetedExtractor(llm_settings, budget) as extractor:
                 print(f"Парный аудит: {len(cases)} кейсов, до {args.max_jev_calls} вызовов {verifier_name} / {budget.maximum} LLM", flush=True)
@@ -884,13 +860,6 @@ async def run_live(args):
                     # Старые отчёты и читатели Jev сохраняют прежние ключи.
                     report.update(jev_api_calls=report["verifier_api_calls"], jev_models=report["verifier_models"],
                                   jev_usage=report["verifier_usage"])
-                elif args.verifier == "clm":
-                    report["clm_context_note"] = "Check clm-serve/vLLM context limits; encoder truncation is not reported by this API."
-                elif args.verifier == "jeff":
-                    report["jeff_context_note"] = "jeff-serve rejects overlong question branches with HTTP 422; default trained limit is 8192 tokens."
-                elif args.verifier == "laya":
-                    report["laya_context"] = laya_request_options(decision_settings)["extra_body"]
-                    report["laya_context_note"] = "Token budgets are explicit; Laya may truncate state or option descriptions. Quality and thresholds require domain evaluation."
                 if report["not_attempted"]:
                     report["conclusion"] = "incomplete"
                 report["cost_comparison"] = {
@@ -972,6 +941,8 @@ if __name__ == "__main__":
         complete = asyncio.run(run_live(args))
     except AuditResumeError as error:
         parser.exit(1, f"Продолжение остановлено: {error}\n")
+    except AuditInputError as error:
+        parser.exit(1, f"Аудит остановлен: {error}\n")
     except ValidationError:
         parser.exit(1, "Ошибка настроек или ответа API; значения скрыты.\n")
     except Exception as error:

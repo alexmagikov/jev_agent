@@ -334,3 +334,57 @@ def test_resume_rejects_changed_source_or_saved_values_before_any_api(corruption
         source["candidates"][-1]["checked_fields"]["amount_rub"]["value"] = 123
     with pytest.raises(ValueError):
         asyncio.run(audit_cases([case()], None, None, resume_records={"C1": source}))
+
+
+class Repaired(Extractor):
+    async def extract(self, *args, **kwargs):
+        return proposal(200)
+
+
+def test_resume_does_not_record_the_rechecked_candidate_twice():
+    class Down(Jev):
+        async def ainvoke(self, *args):
+            raise TypeSafeAPITimeoutError(120)
+
+    interrupted = asyncio.run(audit_cases([case()], Extractor(), Down(), api_retries=0))[0]
+    assert interrupted["status"] == "api_error"
+    record = asyncio.run(audit_cases([case()], Repaired(), Jev(), resume_records={"C1": interrupted}))[0]
+    assert record["status"] == "complete"
+    assert [candidate["proposal"] for candidate in record["candidates"]] == [
+        proposal(100).model_dump(mode="json"), proposal(200).model_dump(mode="json")]
+    assert [entry["candidate_index"] for entry in record["jev_rounds"]] == [0, 0, 1]
+    detection = build_report([record], [label()])["error_detection"]
+    assert (detection["evaluated_cases"], detection["tp"], detection["skipped_cases"]) == (1, 1, [])
+
+
+def test_resume_with_received_final_answer_keeps_the_rejected_field_outcome():
+    class StillWrong(Extractor):
+        async def extract(self, *args, **kwargs):
+            return proposal(100)
+
+    rejected = asyncio.run(audit_cases([case()], StillWrong(), Jev()))[0]
+    expected = build_report([rejected], [label()])["field_outcomes"]
+    assert expected["detected_and_rejected"] == 1
+    crashed = {key: value for key, value in deepcopy(rejected).items()
+               if key not in ("error_type", "failure_reason", "validation_failures")}
+    crashed["status"] = "started"  # процесс упал после ответа Jev, до записи итога
+    record = asyncio.run(audit_cases([case()], None, None, resume_records={"C1": crashed}))[0]
+    assert record["status"] == "rejected"
+    assert build_report([record], [label()])["field_outcomes"] == expected
+
+
+def test_unusable_verifier_answer_is_not_saved_as_a_verdict_and_is_asked_again_on_resume():
+    class Incomplete(Jev):
+        async def ainvoke(self, state, questions, response_model):
+            keys = list(questions.root)[1:]
+            return response_model.model_validate({"answers": {key: {"noul": 0.01} for key in keys}})
+
+    interrupted = asyncio.run(audit_cases([case()], Extractor(), Incomplete(), api_retries=0))[0]
+    assert interrupted["status"] == "api_error"
+    assert "answers" not in interrupted["jev_rounds"][-1]
+    verifier = Jev()
+    record = asyncio.run(audit_cases([case()], Repaired(), verifier, resume_records={"C1": interrupted}))[0]
+    assert record["status"] == "complete"
+    assert len(verifier.states) == 2
+    detection = build_report([record], [label()])["error_detection"]
+    assert (detection["evaluated_cases"], detection["tp"], detection["skipped_cases"]) == (1, 1, [])

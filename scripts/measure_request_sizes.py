@@ -24,7 +24,7 @@ from src.llm import AsyncLLMExtractor, build_extraction_prompt
 from src.settings import LLMSettings
 from src.verification import (
     VerificationResponse, VerificationState, _ITEMS_RULES, _RULES,
-    build_verification_questions, verify_fields,
+    build_verification_questions, parse_check_key, verify_fields,
 )
 
 
@@ -103,7 +103,8 @@ async def main(export_dir=None):
                 for name in questions.root
             }})
 
-    jev_feedback = await verify_fields(messages, "invoice_draft", proposal, checked, ExampleJev())
+    jev_remarks = await verify_fields(messages, "invoice_draft", proposal, checked, ExampleJev())
+    jev_feedback = [str(remark) for remark in jev_remarks]
     python_feedback = ["Цитата источника отсутствует в указанной реплике"]
     captured = []
 
@@ -171,7 +172,7 @@ async def main(export_dir=None):
             retry_user["template"] = user["template"]
             retry_user["output_schema"] = user["output_schema"]
         assert retry_user == {k: v for k, v in user.items() if k != "feedback"}
-    question_counts = Counter(name.split("::")[1] for name in questions.root)
+    question_counts = Counter(parse_check_key(name)[1] for name in questions.root)
     counts = Counter((case["split"], types[case["case_id"]]) for case in cases)
     stats = {
         "method": "offline: actual LLM request via MockTransport; TypeSafe SDK request builder; no API calls",

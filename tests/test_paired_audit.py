@@ -278,6 +278,20 @@ def test_unknown_target_case_is_rejected_before_any_api_setup(tmp_path, monkeypa
         asyncio.run(module.run_live(args))
 
 
+def test_cli_explains_input_errors_instead_of_hiding_them(tmp_path):
+    import subprocess
+    import sys
+
+    path = tmp_path / "cases.jsonl"
+    path.write_text(case().model_dump_json())
+    completed = subprocess.run([
+        sys.executable, "-B", "-m", "scripts.audit_jev", "--live", "--input", str(path), "--case-id", "UNKNOWN",
+    ], capture_output=True, text=True)
+    assert completed.returncode == 1
+    assert "UNKNOWN" in completed.stderr
+    assert "скрыт" not in completed.stderr
+
+
 def test_jev_audit_collects_real_response_usage_without_a_second_sdk_request():
     from types import SimpleNamespace
     from src.verification import VerificationResponse
