@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 
 import httpx2
 import pytest
@@ -18,11 +19,12 @@ def settings(**overrides):
 
 
 def test_prompt_explicitly_states_inn_length_and_invalid_handling():
-    from src.llm import EXTRACTION_PROMPT
+    from src.llm import build_extraction_prompt
+    EXTRACTION_PROMPT = build_extraction_prompt("invoice_draft")
 
-    assert "ИНН должен содержать ровно 10 или 12 цифр" in EXTRACTION_PROMPT
-    assert "Не дополняй и не исправляй его самостоятельно" in EXTRACTION_PROMPT
-    assert "При другой длине установи status='invalid', value=null" in EXTRACTION_PROMPT
+    assert "ИНН — ровно 10 или 12 цифр" in EXTRACTION_PROMPT
+    assert "Не дополняй и не исправляй их самостоятельно" in EXTRACTION_PROMPT
+    assert "При другой длине установи status='invalid',\nvalue=null" in EXTRACTION_PROMPT
     assert "и сохрани исходную цитату в evidence" in EXTRACTION_PROMPT
 
 
@@ -45,21 +47,22 @@ def envelope(content=None, usage=None):
 
 @pytest.mark.parametrize("debug", [False, True])
 @pytest.mark.parametrize("finish_reason", ["stop", "length"])
-def test_debug_shows_model_text_before_validation_only_when_enabled(debug, finish_reason, capsys):
+def test_debug_shows_model_text_before_validation_only_when_enabled(debug, finish_reason, caplog):
     from src.llm import LLMResponseError
 
+    caplog.set_level(logging.DEBUG if debug else logging.INFO, logger="src")
     response = envelope("not valid JSON")
     response["choices"][0]["finish_reason"] = finish_reason
 
     async def run():
         transport = httpx2.MockTransport(lambda request: httpx2.Response(200, json=response))
         async with httpx2.AsyncClient(transport=transport) as client:
-            async with AsyncLLMExtractor(settings(), client=client, debug=debug) as extractor:
+            async with AsyncLLMExtractor(settings(), client=client) as extractor:
                 with pytest.raises(LLMResponseError):
                     await extractor.extract(dialogue(), "transfer_draft")
 
     asyncio.run(run())
-    printed = capsys.readouterr().out
+    printed = caplog.text
     assert ("not valid JSON" in printed) is debug
     assert ("finish_reason=" in printed) is debug
     assert "Authorization" not in printed

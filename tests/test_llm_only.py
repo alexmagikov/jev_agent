@@ -51,8 +51,8 @@ def forbid_jev(monkeypatch):
 
     monkeypatch.setattr(pipeline, "classify_document", forbidden)
     monkeypatch.setattr(pipeline, "verify_fields", forbidden)
-    monkeypatch.setattr(runner, "JevClientSettings", forbidden)
-    monkeypatch.setattr(runner, "AsyncJev", forbidden)
+    monkeypatch.setattr(runner, "DecisionModelSettings", forbidden)
+    monkeypatch.setattr(runner, "DecisionModelClient", forbidden)
 
 
 def settings(protocol="anthropic"):
@@ -84,7 +84,7 @@ async def run_case(replies, *, protocol="anthropic", max_attempts=2):
     async with httpx2.AsyncClient(transport=httpx2.MockTransport(respond)) as client:
         async with AsyncLLMExtractor(settings(protocol), client=client) as extractor:
             result = await pipeline.process_document(
-                "C1", messages(), None, extractor, use_jev=False, max_attempts=max_attempts,
+                "C1", messages(), None, extractor, use_verifier=False, max_attempts=max_attempts,
             )
             return result, requests, extractor.usage
 
@@ -166,7 +166,7 @@ def test_llm_only_invalid_messages_are_rejected_before_inference(monkeypatch):
             pytest.fail("invalid input must not call LLM")
 
     with pytest.raises(pipeline.PipelineError):
-        asyncio.run(pipeline.process_document("C1", messages() * 2, None, ForbiddenExtractor(), use_jev=False))
+        asyncio.run(pipeline.process_document("C1", messages() * 2, None, ForbiddenExtractor(), use_verifier=False))
 
 
 def test_llm_only_fatal_classification_error_is_not_retried(monkeypatch):
@@ -179,13 +179,14 @@ def test_llm_only_fatal_classification_error_is_not_retried(monkeypatch):
             raise LLMError("Ошибка HTTP 401")
 
     with pytest.raises(pipeline.PipelineError, match="401"):
-        asyncio.run(pipeline.process_document("C1", messages(), None, UnavailableExtractor(), use_jev=False))
+        asyncio.run(pipeline.process_document("C1", messages(), None, UnavailableExtractor(), use_verifier=False))
     assert len(calls) == 1
 
 
-def test_llm_only_cli_is_explicit_and_does_not_change_default():
+def test_cli_defaults_match_the_experiment_setup():
     parser = runner.build_parser()
-    assert parser.parse_args([]).mode == "classification"
+    assert parser.parse_args([]).mode == "full"
+    assert parser.parse_args([]).verifier == "decision"
     assert parser.parse_args(["--mode", "llm-only"]).mode == "llm-only"
 
 
@@ -209,9 +210,9 @@ def test_llm_only_cli_needs_no_jev_key_and_keeps_metrics_and_usage(monkeypatch, 
         async with httpx2.AsyncClient(transport=httpx2.MockTransport(respond)) as client:
             extractor = AsyncLLMExtractor(settings(), client=client)
             monkeypatch.setattr(runner, "AsyncLLMExtractor", lambda *args, **kwargs: extractor)
-            await runner.main(input_path, None if default_output else output_path, labels_path, mode="llm-only")
+            return await runner.main(input_path, None if default_output else output_path, labels_path, mode="llm-only")
 
-    asyncio.run(run())
+    output_path = asyncio.run(run())
     row = json.loads(output_path.read_text())
     assert row["fields"]["amount_rub"]["value"] == 12000
     assert output_path.with_name("llm-only.errors.jsonl").read_text() == ""
@@ -243,11 +244,11 @@ def test_llm_only_continues_after_failed_classification_and_counts_errors(monkey
         async with httpx2.AsyncClient(transport=httpx2.MockTransport(respond)) as client:
             extractor = AsyncLLMExtractor(settings(), client=client)
             monkeypatch.setattr(runner, "AsyncLLMExtractor", lambda *args, **kwargs: extractor)
-            await runner.main(input_path, output_path, labels_path, mode="llm-only")
+            return await runner.main(input_path, output_path, labels_path, mode="llm-only")
 
-    asyncio.run(run())
+    output_path = asyncio.run(run())
     assert json.loads(output_path.read_text())["case_id"] == "C2"
-    assert json.loads((tmp_path / "out.errors.jsonl").read_text())["case_id"] == "C1"
+    assert json.loads(output_path.with_name("out.errors.jsonl").read_text())["case_id"] == "C1"
     printed = capsys.readouterr().out
     assert "Успешно: 1; с ошибкой: 1" in printed
     assert "1/2 (50.0%)" in printed

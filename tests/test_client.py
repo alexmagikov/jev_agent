@@ -4,7 +4,7 @@ from decimal import Decimal
 import pytest
 from pydantic import BaseModel, Field
 
-from src.client import AsyncJev
+from src.client import DecisionModelClient
 
 
 class State(BaseModel):
@@ -56,7 +56,7 @@ def test_async_jev_serializes_calls_returns_response_and_closes_sdk(monkeypatch,
         return sdk_client
 
     monkeypatch.setattr(client_module, "AsyncTypeSafeClient", make_client)
-    jev = AsyncJev(api_key="test-key")
+    jev = DecisionModelClient(api_key="test-key")
     state = State(requestId="case-7", amount=Decimal("12.50"))
     questions = Questions(shouldCheck="Is this supported?")
     expected = Answer(accepted=True)
@@ -115,7 +115,7 @@ def test_jev_usage_is_retained_while_returning_the_callers_typed_model(monkeypat
         clients.append(sdk)
         return sdk
     monkeypatch.setattr(module, "AsyncTypeSafeClient", create)
-    client = AsyncJev("fake")
+    client = DecisionModelClient("fake")
     async def run():
         for _ in range(2):
             result = await client.ainvoke(State(requestId="id", amount=1), Questions(shouldCheck="check"), VerificationResponse)
@@ -132,15 +132,15 @@ def test_jev_usage_is_retained_while_returning_the_callers_typed_model(monkeypat
 def test_jev_failed_request_is_counted_without_inventing_token_usage(monkeypatch):
     import src.client as module
     from typesafe_sdk import TypeSafeAPITimeoutError
-    from src.client import JevError
+    from src.client import DecisionModelError
 
     def create(**kwargs):
         sdk = FakeTypeSafeClient(**kwargs)
         sdk.error = TypeSafeAPITimeoutError(30)
         return sdk
     monkeypatch.setattr(module, "AsyncTypeSafeClient", create)
-    client = AsyncJev("fake")
-    with pytest.raises(JevError):
+    client = DecisionModelClient("fake")
+    with pytest.raises(DecisionModelError):
         asyncio.run(client.ainvoke(State(requestId="id", amount=1), Questions(shouldCheck="check"), Answer))
     assert client.usage.sdk_calls == 1 and client.usage.responses == 0
     assert client.usage.usage_reports == 0
@@ -165,7 +165,7 @@ def test_real_sdk_response_preserves_classification_and_usage_over_mock_http(mon
     monkeypatch.setattr(module, "AsyncTypeSafeClient", lambda **kwargs: real_sdk(
         **kwargs, transport=httpx2.MockTransport(respond),
     ))
-    client = AsyncJev("fake")
+    client = DecisionModelClient("fake")
     case = DocumentTypeCase(state=DocumentTypeState(messages=[
         DocumentMessage(id="m1", role="user", text="Переведи себе"),
     ]))

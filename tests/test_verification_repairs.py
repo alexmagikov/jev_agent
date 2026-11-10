@@ -6,11 +6,13 @@ import httpx2
 
 from src.cases.document_type import DocumentMessage
 from src.extraction import ExtractionProposal, prepare_fields
-from src.llm import AsyncLLMExtractor, EXTRACTION_PROMPT
+from src.llm import AsyncLLMExtractor, build_extraction_prompt
 from src.pipeline import process_document
 from src.schemas.document_schemas import InvoiceFields
 from src.settings import LLMSettings
 from src.verification import build_verification_questions
+
+EXTRACTION_PROMPT = build_extraction_prompt("invoice_draft")
 
 
 def invoice_proposal(*, name="ИП Смирнову", amount=1500):
@@ -93,13 +95,16 @@ def test_jev_has_atomic_checks_for_each_known_item_attribute():
 
 
 def test_common_prompt_and_jev_agree_on_canonical_names_and_basis_numbers():
-    assert "именительный падеж" in EXTRACTION_PROMPT
-    assert "без обозначения №" in EXTRACTION_PROMPT
+    from src.field_rules import RECIPIENT_NAME_RULE, BASIS_NUMBER_RULE, INVOICE_SUBJECT_RULE
+
+    for rule in (RECIPIENT_NAME_RULE, BASIS_NUMBER_RULE, INVOICE_SUBJECT_RULE):
+        assert EXTRACTION_PROMPT.count(rule) == 1
     prepared = prepare_fields(invoice_proposal(), messages(), "invoice_draft")
     questions = build_verification_questions(prepared).root
     assert "recipient_name::noncanonical" in questions
     assert "nominative" in questions["recipient_name::noncanonical"].model_dump_json()
-    assert "subject" in EXTRACTION_PROMPT and "не склеивай" in EXTRACTION_PROMPT
+    assert RECIPIENT_NAME_RULE in questions["recipient_name::noncanonical"].model_dump_json()
+    assert BASIS_NUMBER_RULE in questions["basis_number::missing_supported"].model_dump_json()
 
 
 def test_atomic_jev_feedback_repairs_a_numeric_role_error_that_python_cannot_detect():
@@ -198,13 +203,13 @@ def test_subject_and_item_unit_rules_are_shared_by_extractor_and_verifier():
         id="m1", role="user", text="Счёт ИП Смирнову: 2 ремонта, всего 1500 рублей",
     )], "invoice_draft")
     questions = build_verification_questions(prepared).root
-    assert INVOICE_SUBJECT_RULE in questions["subject::status_wrong"].model_dump_json()
+    assert INVOICE_SUBJECT_RULE in questions["subject::missing_supported"].model_dump_json()
     assert ITEM_UNIT_RULE in questions["items[0].unit::value_wrong"].model_dump_json()
     assert INVOICE_SUBJECT_RULE in EXTRACTION_PROMPT and ITEM_UNIT_RULE in EXTRACTION_PROMPT
 
 
 def test_amount_ambiguity_feedback_repairs_status_and_preserves_other_fields():
-    dialogue = [DocumentMessage(id="m1", role="user", text="Счёт ИП Смирнову: плитка 1500 рублей")]
+    dialogue = [DocumentMessage(id="m1", role="user", text="Счёт ИП Смирнову: плитка 1500 рублей — не уточнили, за штуку или за всё")]
 
     class Extractor:
         async def extract(self, *args, **kwargs):
@@ -235,7 +240,7 @@ def test_missing_subject_question_checks_named_goods_without_price_rules():
     from src.field_rules import INVOICE_SUBJECT_RULE
 
     prepared = prepare_fields(invoice_proposal(), messages(), "invoice_draft")
-    question = build_verification_questions(prepared).root["subject::status_wrong"].model_dump_json()
+    question = build_verification_questions(prepared).root["subject::missing_supported"].model_dump_json()
     assert INVOICE_SUBJECT_RULE in question
     assert "single billed goods/service category" in question
     assert "wrongly left missing" in question
@@ -250,11 +255,12 @@ def test_missing_invoice_total_gets_a_targeted_computability_question():
     data = invoice_proposal().model_dump()
     data["fields"]["amount_rub"] = {"status": "missing", "value": None, "evidence": []}
     prepared = prepare_fields(ExtractionProposal.model_validate(data), messages(), "invoice_draft")
-    text = build_verification_questions(prepared).root["amount_rub::status_wrong"].model_dump_json()
+    text = build_verification_questions(prepared).root["amount_rub::missing_supported"].model_dump_json()
     assert "wrongly left missing" in text
     assert "sum" in text and "line" in text
     assert "unknown quantity" in text
-    assert "fee + fee" in INVOICE_AMOUNT_RULE
+    assert "100+100=200" in INVOICE_AMOUNT_RULE
+    assert "both lines together: total=100" in INVOICE_AMOUNT_RULE
     assert INVOICE_AMOUNT_RULE in EXTRACTION_PROMPT
 
 
@@ -277,7 +283,7 @@ def test_missing_total_repair_sums_named_line_fees_without_inventing_item_quanti
         async def ainvoke(self, state, questions, response_model):
             verified.append(state)
             return response_model.model_validate({"answers": {
-                key: {"noul": 0.9 if key == "amount_rub::status_wrong" and
+                key: {"noul": 0.9 if key == "amount_rub::missing_supported" and
                       questions.root[key].instructions["field"]["status"] == "missing" else 0.01}
                 for key in questions.root
             }})
@@ -327,7 +333,7 @@ def test_omitted_subject_feedback_repairs_only_subject_without_copying_item_attr
             if hasattr(questions, "document_type"):
                 return await super().ainvoke(state, questions, response_model)
             return response_model.model_validate({"answers": {
-                key: {"noul": 0.9 if key == "subject::status_wrong" and
+                key: {"noul": 0.9 if key == "subject::missing_supported" and
                       questions.root[key].instructions["field"]["status"] == "missing" else 0.01}
                 for key in questions.root
             }})
@@ -337,3 +343,13 @@ def test_omitted_subject_feedback_repairs_only_subject_without_copying_item_attr
     assert extractor.calls == 2
     assert result.fields.subject.value == "монтаж"
     assert result.fields.amount_rub.value == 1500
+
+
+def test_ambiguous_person_name_form_is_kept_as_written_by_both_models():
+    from src.field_rules import RECIPIENT_NAME_RULE
+
+    assert "only when unambiguous" in RECIPIENT_NAME_RULE and "otherwise keep the user's form" in RECIPIENT_NAME_RULE
+    assert EXTRACTION_PROMPT.count(RECIPIENT_NAME_RULE) == 1
+    prepared = prepare_fields(invoice_proposal(), messages(), "invoice_draft")
+    questions = build_verification_questions(prepared).root
+    assert RECIPIENT_NAME_RULE in questions["recipient_name::noncanonical"].model_dump_json()

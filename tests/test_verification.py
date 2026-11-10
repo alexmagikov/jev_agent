@@ -51,6 +51,15 @@ def _verify(client, *, threshold=0.7):
     )
 
 
+def test_remark_keeps_the_repair_feedback_text_and_exposes_its_parts():
+    from src.verification import Remark, parse_check_key
+
+    path, check = parse_check_key("items[0].quantity::value_wrong")
+    remark = Remark(path, check, score=0.954, verifier="Jev", question="Is it wrong?")
+    assert (remark.path, remark.check) == ("items[0].quantity", "value_wrong")
+    assert str(remark) == "items[0].quantity::value_wrong: Jev обнаружил возможную ошибку (0.95). Is it wrong?"
+
+
 @pytest.mark.parametrize("key_change", ["missing", "extra"])
 def test_verifier_requires_exactly_the_requested_answer_keys(key_change):
     with pytest.raises(VerificationError, match="неполный или неожиданный"):
@@ -106,7 +115,7 @@ def test_feedback_contains_specific_check_without_general_or_item_rules(monkeypa
         }
     proposal = ExtractionProposal.model_validate({"fields": raw_fields})
     fields = prepare_fields(proposal, messages, "invoice_draft")
-    target = "items::unsupported" if items_present else "items::status_wrong"
+    target = "items::unsupported" if items_present else "items::missing_supported"
     captured = []
 
     class SelectiveJev:
@@ -117,7 +126,9 @@ def test_feedback_contains_specific_check_without_general_or_item_rules(monkeypa
                 for key in questions.root
             }})
 
-    feedback = asyncio.run(verify_fields(messages, "invoice_draft", proposal, fields, SelectiveJev()))
+    remarks = asyncio.run(verify_fields(messages, "invoice_draft", proposal, fields, SelectiveJev()))
+    feedback = [str(remark) for remark in remarks]
+    assert [(remark.path, remark.check, remark.score) for remark in remarks] == [(*target.split("::"), 0.89)]
     assert "GENERAL_RULES_FOR_JEV_ONLY" in captured[0][0].rules
     assert "ITEM_RULES_FOR_JEV_ONLY" in captured[0][1].instructions["rules"]
     assert len(feedback) == 1
@@ -126,4 +137,69 @@ def test_feedback_contains_specific_check_without_general_or_item_rules(monkeypa
     assert "`items`" in feedback[0]
     assert "GENERAL_RULES_FOR_JEV_ONLY" not in feedback[0]
     assert "ITEM_RULES_FOR_JEV_ONLY" not in feedback[0]
-    assert ("unsupported by its cited user messages" if items_present else "Is the status") in feedback[0]
+    assert ("unsupported by its cited user messages" if items_present else "usable value") in feedback[0]
+
+
+def test_unresolved_bank_choice_is_sent_to_targeted_repair():
+    from src.pipeline import DocumentTypeDecision, process_selected_document
+
+    messages, initial, _ = _inputs()
+    messages.append(DocumentMessage(
+        id="m2", role="user", text="На Сбер или ВТБ, ещё не решил",
+    ))
+    data = initial.model_dump()
+    data["fields"]["destination_bank"] = {
+        "status": "fillable", "value": "Сбер",
+        "evidence": [{"message_id": "m2", "quote": "Сбер или ВТБ"}],
+    }
+    initial = ExtractionProposal.model_validate(data)
+    checks = []
+
+    class Verifier:
+        async def ainvoke(self, state, questions, response_model):
+            checks.append(questions.root)
+            key = "destination_bank::unresolved_alternatives"
+            if len(checks) == 1:
+                assert key in questions.root
+                assert "amount_rub::unresolved_alternatives" in questions.root
+                assert "source_account_kind::unresolved_alternatives" in questions.root
+            else:
+                assert key not in questions.root
+                assert "destination_bank::missing_supported" in questions.root
+            return response_model.model_validate({"answers": {
+                name: {"noul": 0.95 if name == key else 0.01}
+                for name in questions.root
+            }})
+
+    class Extractor:
+        async def extract(self, *args, **kwargs):
+            assert kwargs["repair_paths"] == ["destination_bank"]
+            assert kwargs["repair_fields"] == ["destination_bank"]
+            assert "status=ambiguous" in kwargs["feedback"][0]
+            repaired = initial.model_copy(deep=True)
+            repaired.fields["destination_bank"].status = "ambiguous"
+            repaired.fields["destination_bank"].value = None
+            return repaired
+
+    result = asyncio.run(process_selected_document(
+        "bank-choice", messages,
+        DocumentTypeDecision(document_type="transfer_draft", confidence=0.9),
+        Verifier(), Extractor(), initial_proposal=initial,
+    ))
+    assert len(checks) == 2
+    assert result.fields.destination_bank.status == "ambiguous"
+    assert result.fields.destination_bank.value is None
+    assert result.fields.destination_bank.evidence == ["m2"]
+    assert result.fields.amount_rub.value == 100
+
+
+def test_default_wrong_threshold_is_shared_by_settings_pipeline_and_audit():
+    import inspect
+
+    from scripts.audit_jev import audit_cases
+    from src.pipeline import process_document, process_selected_document
+    from src.settings import PipelineSettings
+
+    assert PipelineSettings(_env_file=None).wrong_threshold == .8
+    for function in (verify_fields, process_document, process_selected_document, audit_cases):
+        assert inspect.signature(function).parameters["wrong_threshold"].default == .8

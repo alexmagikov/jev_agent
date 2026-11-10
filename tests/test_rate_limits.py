@@ -1,3 +1,4 @@
+from src.settings import DecisionModelSettings as ConfiguredDecisionSettings
 import asyncio
 import json
 from types import SimpleNamespace
@@ -73,7 +74,7 @@ def test_pacing_is_shared_by_classification_extraction_and_cases(clock):
     assert clock.sleeps == [6, 6]
 
 
-def test_429_honors_retry_after_even_when_other_network_retries_are_disabled(clock, capsys):
+def test_429_honors_retry_after_even_when_other_network_retries_are_disabled(clock, caplog):
     requests = []
 
     def respond(request):
@@ -95,7 +96,7 @@ def test_429_honors_retry_after_even_when_other_network_retries_are_disabled(clo
     asyncio.run(run())
     assert len(requests) == 2 and requests[0] == requests[1]
     assert clock.sleeps == [20]
-    printed = capsys.readouterr().out
+    printed = caplog.text
     assert "429" in printed and "20" in printed
     assert "fake-test-key" not in printed
 
@@ -234,7 +235,7 @@ def test_pipeline_preserves_rate_limit_error_for_batch_stop(clock, phase):
                 with pytest.raises(pipeline.PipelineRateLimitError, match="429"):
                     await pipeline.process_document(
                         "C1", [DocumentMessage(id="m1", role="user", text="Переведи себе")],
-                        None, extractor, use_jev=False,
+                        None, extractor, use_verifier=False,
                     )
 
     asyncio.run(run())
@@ -273,19 +274,35 @@ def test_batch_stops_on_rate_limit_and_prints_partial_summary(monkeypatch, tmp_p
             pass
 
     monkeypatch.setattr(runner, "process_document", process)
-    monkeypatch.setattr(runner, "JevClientSettings", lambda: SimpleNamespace(api_key=SimpleNamespace(get_secret_value=lambda: "fake")))
-    monkeypatch.setattr(runner, "AsyncJev", lambda **kwargs: object())
+    monkeypatch.setattr(runner, "DecisionModelSettings", lambda: ConfiguredDecisionSettings(_env_file=None, DECISION_API_KEY="fake"))
+    monkeypatch.setattr(runner, "DecisionModelClient", lambda **kwargs: object())
     monkeypatch.setattr(runner, "LLMSettings", lambda: object())
     monkeypatch.setattr(runner, "PipelineSettings", lambda: PipelineSettings(_env_file=None))
     monkeypatch.setattr(runner, "AsyncLLMExtractor", lambda *args, **kwargs: Extractor())
     with pytest.raises(pipeline.PipelineRateLimitError):
         asyncio.run(runner.main(path, output, labels, mode=mode))
+    output, = (tmp_path / "out.runs").glob("*/out.jsonl")
     assert calls == ["C1", "C2"]
     assert json.loads(output.read_text())["case_id"] == "C1"
-    errors = [json.loads(line) for line in (tmp_path / "out.errors.jsonl").read_text().splitlines()]
+    errors = [json.loads(line) for line in output.with_name("out.errors.jsonl").read_text().splitlines()]
     assert [row["case_id"] for row in errors] == ["C2"]
     printed = capsys.readouterr().out
     assert "Успешно: 1; с ошибкой: 1" in printed
     assert "Не обработано: 1" in printed
     assert "1/2 (50.0%)" in printed
     assert "HTTP 429" in printed
+
+
+@pytest.mark.parametrize("timeout,valid", [(600, True), (601, False)])
+def test_llm_timeout_allows_long_reasoning_up_to_ten_minutes(timeout, valid):
+    from pydantic import ValidationError
+
+    from src.settings import LLMSettings
+
+    build = lambda: LLMSettings(_env_file=None, LLM_API_KEY="fixture", LLM_MODEL="fixture",
+                                LLM_TIMEOUT_SECONDS=timeout)
+    if valid:
+        assert build().timeout_seconds == timeout
+    else:
+        with pytest.raises(ValidationError):
+            build()

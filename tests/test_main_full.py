@@ -1,3 +1,4 @@
+from src.settings import DecisionModelSettings as ConfiguredDecisionSettings
 import asyncio
 import json
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ from pydantic import SecretStr
 import src.main as runner
 from src.schemas.document_schemas import TransferFields, TransferResult
 from src.llm import LLMUsage
+from src.run_artifacts import write_results
 from src.settings import PipelineSettings
 
 
@@ -51,21 +53,21 @@ def test_printed_correct_value_count_includes_missing_expected_fields(capsys):
 
 
 def test_jev_statistics_label_partial_usage_and_do_not_claim_a_total_price(capsys):
-    from src.client import JevUsage
+    from src.client import DecisionUsage
 
-    runner.print_jev_usage(JevUsage(sdk_calls=3, responses=2, usage_reports=1,
+    runner.print_decision_usage(DecisionUsage(sdk_calls=3, responses=2, usage_reports=1,
                                   input_tokens=17, output_tokens=5, elapsed_seconds=.5))
     text = capsys.readouterr().out
     assert "вызовов SDK=3" in text
     assert "вход=17, выход=5" in text
     assert "usage получен для 1/2" in text
     assert "Внутренние HTTP-повторы SDK отдельно не измеряются" in text
-    assert "Стоимость Jev не включена" in text
+    assert "Стоимость Decision model не включена" in text
 
 
 def test_writing_full_results_preserves_null_and_creates_directory(tmp_path):
     output = tmp_path / "outputs" / "predictions.jsonl"
-    runner.write_results([result()], output)
+    write_results([result()], output)
     row = json.loads(output.read_text())
     assert row["fields"]["amount_rub"] == {
         "status": "missing", "value": None, "evidence": [], "derivation": None,
@@ -79,8 +81,9 @@ def test_duplicate_case_ids_rejected_before_inference(tmp_path):
         runner.load_cases(path)
 
 
+@pytest.mark.parametrize("verifier", ["jev", "decision"])
 @pytest.mark.parametrize("debug", [False, True])
-def test_main_full_writes_predictions_and_prints_metrics(monkeypatch, tmp_path, capsys, debug):
+def test_main_full_writes_predictions_and_prints_metrics(monkeypatch, tmp_path, capsys, debug, verifier):
     input_path, labels_path = tmp_path / "cases.jsonl", tmp_path / "labels.jsonl"
     output_path = tmp_path / "predictions.jsonl"
     write_input(input_path)
@@ -92,24 +95,24 @@ def test_main_full_writes_predictions_and_prints_metrics(monkeypatch, tmp_path, 
         return result(case_id)
 
     monkeypatch.setattr(runner, "process_document", process)
-    monkeypatch.setattr(runner, "JevClientSettings", lambda: SimpleNamespace(api_key=SecretStr("fake")))
-    monkeypatch.setattr(runner, "AsyncJev", lambda **kwargs: object())
+    monkeypatch.setattr(runner, "DecisionModelSettings", lambda: ConfiguredDecisionSettings(_env_file=None, DECISION_API_KEY="fake"))
+    monkeypatch.setattr(runner, "DecisionModelClient", lambda **kwargs: object())
     monkeypatch.setattr(runner, "LLMSettings", lambda: object())
     extractor = FakeExtractor(None)
     monkeypatch.setattr(runner, "AsyncLLMExtractor", lambda settings, **kwargs: extractor)
     monkeypatch.setattr(runner, "PipelineSettings", lambda: PipelineSettings(_env_file=None))
-    asyncio.run(runner.main(input_path, output_path, labels_path, mode="full", limit=1, debug=debug))
+    output_path = asyncio.run(runner.main(input_path, output_path, labels_path, mode="full", verifier=verifier, limit=1, debug=debug))
     assert len(calls) == 1
     assert json.loads(output_path.read_text())["fields"]["amount_rub"]["value"] is None
     printed = capsys.readouterr().out
     assert "Режим full" in printed
     assert "Полное время прогона" in printed
-    assert "Jev" in printed and "Стоимость Jev не включена" in printed
+    assert ("Стоимость Jev не включена" if verifier == "jev" else "Стоимость jev-latest не включена") in printed
     assert "1/1 (100.0%)" in printed
     assert "вход=100" in printed and "выход=20" in printed
     assert ("Ожидаемый результат" in printed) is debug
     assert ("Итог после проверок" in printed) is debug
-    assert calls[0][2]["debug"] is debug
+    assert "debug" not in calls[0][2]  # отладка пайплайна включается через logging
     assert extractor.closed
 
 
@@ -125,13 +128,13 @@ def test_full_failure_preserves_previous_output(monkeypatch, tmp_path):
         raise PipelineError("C1: проверка не пройдена")
 
     monkeypatch.setattr(runner, "process_document", fail)
-    monkeypatch.setattr(runner, "JevClientSettings", lambda: SimpleNamespace(api_key=SecretStr("fake")))
-    monkeypatch.setattr(runner, "AsyncJev", lambda **kwargs: object())
+    monkeypatch.setattr(runner, "DecisionModelSettings", lambda: ConfiguredDecisionSettings(_env_file=None, DECISION_API_KEY="fake"))
+    monkeypatch.setattr(runner, "DecisionModelClient", lambda **kwargs: object())
     monkeypatch.setattr(runner, "LLMSettings", lambda: object())
     extractor = FakeExtractor(None)
     monkeypatch.setattr(runner, "AsyncLLMExtractor", lambda settings, **kwargs: extractor)
     with pytest.raises(PipelineError):
-        asyncio.run(runner.main(path, output, labels, mode="full", fail_fast=True))
+        asyncio.run(runner.main(path, output, labels, mode="full", verifier="jev", fail_fast=True))
     assert output.read_text() == "previous run\n"
     assert extractor.closed
 
@@ -140,7 +143,7 @@ def test_output_cannot_overwrite_dataset(tmp_path):
     path = tmp_path / "cases.jsonl"
     write_input(path)
     with pytest.raises(ValueError, match="совпадать"):
-        asyncio.run(runner.main(input_path=path, output_path=path, mode="full"))
+        asyncio.run(runner.main(input_path=path, output_path=path, mode="full", verifier="jev"))
 
 
 def test_cli_supports_full_mode_and_limit():
@@ -153,6 +156,23 @@ def test_debug_cli_is_explicitly_opt_in():
     parser = runner.build_parser()
     assert parser.parse_args([]).debug is False
     assert parser.parse_args(["--mode", "full", "--debug"]).debug is True
+
+
+def test_cli_debug_logging_covers_project_modules_only():
+    import logging
+
+    project = logging.getLogger("src")
+    handlers, level = list(project.handlers), project.level
+    try:
+        runner.configure_logging(debug=True)
+        assert logging.getLogger("src.pipeline").isEnabledFor(logging.DEBUG)
+        assert not logging.getLogger("httpx2").isEnabledFor(logging.DEBUG)
+        runner.configure_logging(debug=False)
+        assert not logging.getLogger("src.pipeline").isEnabledFor(logging.DEBUG)
+        assert logging.getLogger("src.llm").isEnabledFor(logging.WARNING)
+    finally:
+        project.handlers[:] = handlers
+        project.setLevel(level)
 
 
 @pytest.mark.parametrize("debug", [False, True])
@@ -168,24 +188,24 @@ def test_debug_prints_expected_before_inference_even_on_failure(monkeypatch, tmp
     async def fail(*args, **kwargs):
         # Эталон доступен только консоли, но не модели и не проверяющему.
         assert "EXPECTED_ONLY" not in repr((args, kwargs))
-        assert kwargs["debug"] is debug
+        assert "debug" not in kwargs
         raise PipelineError("C1: проверка не пройдена")
 
     monkeypatch.setattr(runner, "process_document", fail)
-    monkeypatch.setattr(runner, "JevClientSettings", lambda: SimpleNamespace(api_key=SecretStr("fake")))
-    monkeypatch.setattr(runner, "AsyncJev", lambda **kwargs: object())
+    monkeypatch.setattr(runner, "DecisionModelSettings", lambda: ConfiguredDecisionSettings(_env_file=None, DECISION_API_KEY="fake"))
+    monkeypatch.setattr(runner, "DecisionModelClient", lambda **kwargs: object())
     monkeypatch.setattr(runner, "LLMSettings", lambda: object())
     monkeypatch.setattr(runner, "AsyncLLMExtractor", lambda settings, **kwargs: FakeExtractor(settings))
     with pytest.raises(PipelineError):
-        asyncio.run(runner.main(path, tmp_path / "out.jsonl", labels, mode="full", debug=debug, fail_fast=True))
+        asyncio.run(runner.main(path, tmp_path / "out.jsonl", labels, mode="full", verifier="jev", debug=debug, fail_fast=True))
     printed = capsys.readouterr().out
     assert ("EXPECTED_ONLY" in printed) is debug
 
 
 def mock_batch_runtime(monkeypatch, process):
     monkeypatch.setattr(runner, "process_document", process)
-    monkeypatch.setattr(runner, "JevClientSettings", lambda: SimpleNamespace(api_key=SecretStr("fake")))
-    monkeypatch.setattr(runner, "AsyncJev", lambda **kwargs: object())
+    monkeypatch.setattr(runner, "DecisionModelSettings", lambda: ConfiguredDecisionSettings(_env_file=None, DECISION_API_KEY="fake"))
+    monkeypatch.setattr(runner, "DecisionModelClient", lambda **kwargs: object())
     monkeypatch.setattr(runner, "LLMSettings", lambda: object())
     extractor = FakeExtractor(None)
     monkeypatch.setattr(runner, "AsyncLLMExtractor", lambda settings, **kwargs: extractor)
@@ -206,6 +226,11 @@ def jsonl(path):
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
+def run_output(requested):
+    output, = (requested.parent / (requested.stem + ".runs")).glob("*/" + requested.name)
+    return output
+
+
 @pytest.mark.parametrize("failed_id", ["C1", "C2", "C3"])
 def test_batch_continues_after_failure_and_saves_each_case(monkeypatch, tmp_path, capsys, failed_id):
     from src.pipeline import PipelineError
@@ -217,14 +242,16 @@ def test_batch_continues_after_failure_and_saves_each_case(monkeypatch, tmp_path
 
     async def process(case_id, *args, **kwargs):
         if calls:
-            snapshots.append((jsonl(output), jsonl(errors)))
+            actual = run_output(output)
+            snapshots.append((jsonl(actual), jsonl(actual.with_name(errors.name))))
         calls.append(case_id)
         if case_id == failed_id:
             raise PipelineError(f"{case_id}: попытки исчерпаны")
         return result(case_id)
 
     extractor = mock_batch_runtime(monkeypatch, process)
-    asyncio.run(runner.main(path, output, labels, mode="full"))
+    output = asyncio.run(runner.main(path, output, labels, mode="full", verifier="jev"))
+    errors = output.with_name(errors.name)
     assert calls == ["C1", "C2", "C3"]
     assert [row["case_id"] for row in jsonl(output)] == [i for i in calls if i != failed_id]
     assert jsonl(errors) == [{"case_id": failed_id, "error": f"{failed_id}: попытки исчерпаны"}]
@@ -247,15 +274,16 @@ def test_all_failures_produce_empty_predictions_and_complete_error_report(monkey
         raise PipelineError(f"{case_id}: проверки не пройдены")
 
     mock_batch_runtime(monkeypatch, process)
-    asyncio.run(runner.main(path, output, labels, mode="full"))
-    assert jsonl(output) == []
-    assert [row["case_id"] for row in jsonl(tmp_path / "predictions.errors.jsonl")] == ["C1", "C2"]
+    actual = asyncio.run(runner.main(path, output, labels, mode="full", verifier="jev"))
+    assert jsonl(actual) == []
+    assert jsonl(output)[0]["case_id"] == "OLD"
+    assert [row["case_id"] for row in jsonl(actual.with_name("predictions.errors.jsonl"))] == ["C1", "C2"]
     printed = capsys.readouterr().out
     assert "0/2 (0.0%)" in printed
     assert "Успешно: 0; с ошибкой: 2" in printed
 
 
-def test_successful_rerun_clears_old_failures(monkeypatch, tmp_path):
+def test_successful_rerun_has_own_empty_errors_and_keeps_old_failures(monkeypatch, tmp_path):
     path, labels, output = batch_files(tmp_path, count=1)
     errors = tmp_path / "predictions.errors.jsonl"
     errors.write_text('{"case_id":"OLD","error":"old"}\n')
@@ -264,8 +292,9 @@ def test_successful_rerun_clears_old_failures(monkeypatch, tmp_path):
         return result(case_id)
 
     mock_batch_runtime(monkeypatch, process)
-    asyncio.run(runner.main(path, output, labels, mode="full"))
-    assert jsonl(errors) == []
+    actual = asyncio.run(runner.main(path, output, labels, mode="full", verifier="jev"))
+    assert jsonl(actual.with_name(errors.name)) == []
+    assert jsonl(errors) == [{"case_id": "OLD", "error": "old"}]
 
 
 def test_unexpected_bug_is_not_swallowed_and_previous_checkpoint_survives(monkeypatch, tmp_path):
@@ -278,8 +307,8 @@ def test_unexpected_bug_is_not_swallowed_and_previous_checkpoint_survives(monkey
 
     extractor = mock_batch_runtime(monkeypatch, process)
     with pytest.raises(RuntimeError, match="unexpected bug"):
-        asyncio.run(runner.main(path, output, labels, mode="full"))
-    assert [row["case_id"] for row in jsonl(output)] == ["C1"]
+        asyncio.run(runner.main(path, output, labels, mode="full", verifier="jev"))
+    assert [row["case_id"] for row in jsonl(run_output(output))] == ["C1"]
     assert extractor.closed
 
 
@@ -295,9 +324,9 @@ def test_fail_fast_stops_before_next_case(monkeypatch, tmp_path):
 
     mock_batch_runtime(monkeypatch, process)
     with pytest.raises(PipelineError):
-        asyncio.run(runner.main(path, output, labels, mode="full", fail_fast=True))
+        asyncio.run(runner.main(path, output, labels, mode="full", verifier="jev", fail_fast=True))
     assert calls == ["C1"]
-    assert jsonl(tmp_path / "predictions.errors.jsonl")[0]["case_id"] == "C1"
+    assert jsonl(run_output(output).with_name("predictions.errors.jsonl"))[0]["case_id"] == "C1"
 
 
 def test_fail_fast_cli_defaults_to_continuing():
@@ -311,7 +340,7 @@ def test_errors_path_cannot_overwrite_labels(tmp_path):
     labels = tmp_path / "predictions.errors.jsonl"
     labels.write_text(result().model_dump_json())
     with pytest.raises(ValueError, match="совпадать"):
-        asyncio.run(runner.main(path, output, labels, mode="full"))
+        asyncio.run(runner.main(path, output, labels, mode="full", verifier="jev"))
 
 
 def test_failed_checkpoint_replacement_keeps_previous_complete_file(monkeypatch, tmp_path):
@@ -326,7 +355,7 @@ def test_failed_checkpoint_replacement_keeps_previous_complete_file(monkeypatch,
 
     monkeypatch.setattr(Path, "replace", fail)
     with pytest.raises(OSError, match="cannot replace"):
-        runner.write_results([result("NEW")], output)
+        write_results([result("NEW")], output)
     assert output.read_text() == previous
     assert list(tmp_path.iterdir()) == [output]
 
@@ -348,7 +377,7 @@ def test_bad_labels_fail_before_client_creation(monkeypatch, tmp_path, mode, pro
 
     def forbidden(*args, **kwargs):
         pytest.fail("invalid labels must be rejected before configuring API clients")
-    monkeypatch.setattr(runner, "JevClientSettings", forbidden)
+    monkeypatch.setattr(runner, "DecisionModelSettings", forbidden)
     monkeypatch.setattr(runner, "LLMSettings", forbidden)
     with pytest.raises(ValueError, match="разметк"):
         asyncio.run(runner.main(path, output, labels, mode=mode))

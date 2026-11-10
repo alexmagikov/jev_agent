@@ -212,7 +212,7 @@ def test_pipeline_rechecks_quantity_and_dependent_total_after_scoped_formula_rep
         async def ainvoke(self, state, questions, response_model):
             seen.append(questions)
             return response_model.model_validate({"answers": {
-                key: {"noul": 0.95 if len(seen) == 1 and key == "items[0].quantity::value_wrong" else 0.01}
+                key: {"noul": 0.95 if len(seen) == 1 and key == "items[0].quantity::calculation_operation_wrong" else 0.01}
                 for key in questions.root
             }})
 
@@ -224,4 +224,4 @@ def test_pipeline_rechecks_quantity_and_dependent_total_after_scoped_formula_rep
     assert result.fields.items.value[0].unit_price_rub == 280
     assert result.fields.amount_rub.value == 2800
     assert len(seen) == 2
-    assert seen[1].root["amount_rub::formula_wrong"].instructions["field"]["value"] == 2800
+    assert seen[1].root["amount_rub::calculation_operation_wrong"].instructions["field"]["value"] == 2800

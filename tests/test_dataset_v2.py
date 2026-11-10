@@ -8,7 +8,7 @@ import pytest
 
 from src.main import load_cases, load_labels
 from src.metrics import calculate_metrics
-from src.extraction import _invalid_format
+from src.extraction import invalid_format
 
 
 DATA = Path(__file__).resolve().parents[1] / "data"
@@ -65,7 +65,7 @@ def test_new_cases_have_complete_labels_user_evidence_and_balanced_splits(datase
                 assert field["value"] is None and field["evidence"] == []
         for name, field in labels[case.case_id]["fields"].items():
             if field["status"] == "fillable":
-                assert not _invalid_format(name, field["value"]), (case.case_id, name)
+                assert not invalid_format(name, field["value"]), (case.case_id, name)
 
 
 @pytest.mark.parametrize("split,count", [("dev", 48), ("test", 33), ("all", 81)])
@@ -77,7 +77,7 @@ def test_v2_works_with_existing_loaders_and_metrics(split, count):
     assert report.total_cases == count
     assert report.document_type_accuracy == 1
     assert report.fields.value_accuracy == 1
-    assert report.fields.evidence_accuracy == 1
+    assert report.fields.evidence_id_exact_match == 1
 
 
 @pytest.mark.parametrize("case_id,field,status,expected", [
@@ -105,7 +105,7 @@ def test_v2_works_with_existing_loaders_and_metrics(split, count):
     ("C058", "recipient_email", "invalid", None),
     ("C059", "amount_rub", "ambiguous", None),
     ("C060", "amount_rub", "fillable", 1600),
-    ("C061", "amount_rub", "fillable", 450),
+    ("C061", "amount_rub", "missing", None),
     ("C062", "amount_rub", "fillable", 12000),
     ("C063", "amount_rub", "fillable", 2500),
     ("C064", "amount_rub", "fillable", 27000),
@@ -144,7 +144,9 @@ def test_item_normalization_calculations_and_unknowns(dataset):
     assert all(item["quantity"] is None and item["unit_price_rub"] == 150 for item in items("C061"))
     assert items("C063")[0]["description"] == 'Набор "Лето"'
     assert labels["C050"]["fields"]["amount_rub"]["value"] == 2 * 350 + 3 * 120
-    assert labels["C061"]["fields"]["amount_rub"]["value"] == 150 + 150 + 150
+    assert labels["C061"]["fields"]["amount_rub"] == {
+        "status": "missing", "value": None, "evidence": [], "derivation": None,
+    }
     assert labels["C064"]["fields"]["amount_rub"]["value"] == 3 * 9000
 
 

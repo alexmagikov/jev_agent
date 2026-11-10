@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -81,7 +82,7 @@ def test_full_pipeline_extracts_validates_and_verifies_in_one_batch():
     assert len(client.verification_calls) == 1
     state, questions = client.verification_calls[0]
     assert state.messages == messages()
-    assert "destination_bank::status_wrong" in questions.root
+    assert "destination_bank::missing_supported" in questions.root
     assert "amount_rub::unsupported" in questions.root
 
 
@@ -89,7 +90,7 @@ def test_rejected_extraction_retries_once_and_then_fails_explicitly():
     extractor = FakeExtractor()
     client = FakeJev(reject=True)
     with pytest.raises(PipelineError, match="C1"):
-        asyncio.run(process_document("C1", messages(), client, extractor, max_attempts=2))
+        asyncio.run(process_document("C1", messages(), client, extractor, max_attempts=2, allow_partial=False))
     assert len(extractor.calls) == 2
     assert "amount_rub" in " ".join(extractor.calls[1][2])
 
@@ -108,7 +109,7 @@ def test_python_rejects_evidence_before_any_semantic_verification():
 
     client = FakeJev()
     with pytest.raises(PipelineError):
-        asyncio.run(process_document("C1", messages(), client, BadExtractor(), max_attempts=1))
+        asyncio.run(process_document("C1", messages(), client, BadExtractor(), max_attempts=1, allow_partial=False))
     assert client.verification_calls == []
 
 
@@ -153,12 +154,12 @@ def test_invoice_formula_is_computed_before_jev_sees_it():
     result = asyncio.run(process_document("C1", dialogue, client, InvoiceExtractor()))
     assert result.fields.amount_rub.value == 12000
     state, questions = client.verification_calls[0]
-    claim = questions.root["amount_rub::formula_wrong"].instructions["field"]
+    claim = questions.root["amount_rub::calculation_operation_wrong"].instructions["field"]
     assert claim["value"] == 12000
     assert claim["derivation"]
-    assert "amount_rub::formula_wrong" in questions.root
+    assert "amount_rub::calculation_operation_wrong" in questions.root
     assert claim["calculation"]["expression"] == "hours * price"
-    assert "instructions.field.calculation" in questions.root["amount_rub::formula_wrong"].model_dump_json()
+    assert "instructions.field.calculation" in questions.root["amount_rub::calculation_operation_wrong"].model_dump_json()
 
 
 def test_retry_can_recover_without_reclassifying():
@@ -179,11 +180,11 @@ def test_wrong_missing_status_triggers_retry_too():
         async def ainvoke(self, state, questions, response_model):
             result = await super().ainvoke(state, questions, response_model)
             if hasattr(questions, "root"):
-                result.answers["destination_bank::status_wrong"].noul = 0.9
+                result.answers["destination_bank::missing_supported"].noul = 0.9
             return result
 
-    with pytest.raises(PipelineError, match="destination_bank::status_wrong"):
-        asyncio.run(process_document("C1", messages(), MissingErrorJev(), FakeExtractor()))
+    with pytest.raises(PipelineError, match="destination_bank::missing_supported"):
+        asyncio.run(process_document("C1", messages(), MissingErrorJev(), FakeExtractor(), allow_partial=False))
 
 
 def test_fatal_llm_error_stops_without_using_extraction_attempts():
@@ -217,7 +218,8 @@ def test_invalid_model_output_can_be_repaired_with_feedback():
 
 
 @pytest.mark.parametrize("debug", [False, True])
-def test_debug_reports_attempts_and_python_feedback(debug, capsys):
+def test_debug_reports_attempts_and_python_feedback(debug, caplog):
+    caplog.set_level(logging.DEBUG if debug else logging.INFO, logger="src")
     class MissingEvidenceExtractor(FakeExtractor):
         async def extract(self, *args, **kwargs):
             proposal = transfer_proposal()
@@ -226,26 +228,29 @@ def test_debug_reports_attempts_and_python_feedback(debug, capsys):
 
     with pytest.raises(PipelineError):
         asyncio.run(process_document(
-            "C1", messages(), FakeJev(), MissingEvidenceExtractor(), debug=debug,
+            "C1", messages(), FakeJev(), MissingEvidenceExtractor(), allow_partial=False,
         ))
-    printed = capsys.readouterr().out
+    printed = caplog.text
     assert ("Попытка 1/2" in printed) is debug
     assert ("Попытка 2/2" in printed) is debug
     assert ("для значения или проблемы нужны источники" in printed) is debug
     assert ("Классификация" in printed) is debug
 
 
-def test_debug_reports_jev_feedback(capsys):
+def test_debug_reports_jev_feedback(caplog):
+    caplog.set_level(logging.DEBUG, logger="src")
     with pytest.raises(PipelineError):
-        asyncio.run(process_document("C1", messages(), FakeJev(reject=True), FakeExtractor(), debug=True))
-    assert "amount_rub::unsupported" in capsys.readouterr().out
+        asyncio.run(process_document("C1", messages(), FakeJev(reject=True), FakeExtractor(), allow_partial=False))
+    assert "amount_rub::unsupported" in caplog.text
 
 
 @pytest.mark.parametrize("accept_retry", [False, True])
-def test_jev_retry_and_logs_use_short_feedback_without_prompt(monkeypatch, capsys, accept_retry):
+def test_jev_retry_and_logs_use_short_feedback_without_prompt(monkeypatch, caplog, accept_retry):
     import src.verification as verification
 
-    monkeypatch.setattr(verification, "_RULES", "GENERAL_RULES_FOR_JEV_ONLY")
+    caplog.set_level(logging.DEBUG, logger="src")
+    # Перевод получает общие правила без правила описаний позиций счёта.
+    monkeypatch.setattr(verification, "_COMMON_RULES", "GENERAL_RULES_FOR_JEV_ONLY")
 
     class RejectingJev(FakeJev):
         async def ainvoke(self, state, questions, response_model):
@@ -256,11 +261,11 @@ def test_jev_retry_and_logs_use_short_feedback_without_prompt(monkeypatch, capsy
     client = RejectingJev()
     extractor = FakeExtractor()
     if accept_retry:
-        result = asyncio.run(process_document("C1", messages(), client, extractor, debug=True))
+        result = asyncio.run(process_document("C1", messages(), client, extractor, allow_partial=False))
         assert result.fields.amount_rub.value == 100
     else:
         with pytest.raises(PipelineError) as error:
-            asyncio.run(process_document("C1", messages(), client, extractor, debug=True))
+            asyncio.run(process_document("C1", messages(), client, extractor, allow_partial=False))
         assert "GENERAL_RULES_FOR_JEV_ONLY" not in str(error.value)
         assert "unsupported by its cited user messages" in str(error.value)
 
@@ -268,5 +273,5 @@ def test_jev_retry_and_logs_use_short_feedback_without_prompt(monkeypatch, capsy
     feedback = extractor.calls[1][2]
     assert any("amount_rub::unsupported" in remark and "0.95" in remark for remark in feedback)
     assert all("GENERAL_RULES_FOR_JEV_ONLY" not in remark for remark in feedback)
-    assert "GENERAL_RULES_FOR_JEV_ONLY" not in capsys.readouterr().out
+    assert "GENERAL_RULES_FOR_JEV_ONLY" not in caplog.text
     assert "GENERAL_RULES_FOR_JEV_ONLY" in client.verification_calls[0][0].rules

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 
 import httpx2
 import pytest
@@ -7,7 +8,7 @@ from pydantic import ValidationError
 
 from src.cases.document_type import DocumentMessage
 from src.extraction import get_proposal_schema
-from src.llm import AsyncLLMExtractor, EXTRACTION_PROMPT, LLMError, LLMResponseError
+from src.llm import AsyncLLMExtractor, build_extraction_prompt, LLMError, LLMResponseError
 from src.schemas.document_schemas import InvoiceFields, TransferFields
 from src.settings import LLMSettings
 
@@ -79,7 +80,7 @@ def test_gateway_uses_messages_protocol_and_counts_tokens(document_type):
     assert request.headers["x-opencode-session"] == "test"
     body = json.loads(request.content)
     assert body["model"] == "deepseek-v4.1-flash"
-    assert body["system"] == EXTRACTION_PROMPT
+    assert body["system"] == build_extraction_prompt(document_type)
     assert body["max_tokens"] == 4096
     assert body["stream"] is False
     assert "max_completion_tokens" not in body
@@ -195,7 +196,8 @@ def test_gateway_zero_retries_surfaces_http_error_without_another_request(status
     assert len(requests) == 1
 
 
-def test_gateway_without_optional_settings_keeps_local_schema_validation(capsys):
+def test_gateway_without_optional_settings_keeps_local_schema_validation(caplog):
+    caplog.set_level(logging.DEBUG, logger="src")
     requests = []
 
     def respond(request):
@@ -206,12 +208,12 @@ def test_gateway_without_optional_settings_keeps_local_schema_validation(capsys)
         async with httpx2.AsyncClient(transport=httpx2.MockTransport(respond)) as client:
             async with AsyncLLMExtractor(settings(
                 LLM_RESPONSE_FORMAT=None, LLM_OPENCODE_SESSION=None,
-            ), client=client, debug=True) as extractor:
+            ), client=client) as extractor:
                 await extractor.extract([], "transfer_draft")
 
     asyncio.run(run())
     assert "x-opencode-session" not in requests[0].headers
     assert "response_format" not in json.loads(requests[0].content)
-    printed = capsys.readouterr().out
+    printed = caplog.text
     assert "internal reasoning" not in printed
     assert "test-gateway-key" not in printed

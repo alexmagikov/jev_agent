@@ -164,6 +164,17 @@ def test_unsourced_numeric_value_is_rejected():
         prepare(proposal(amount_rub=filled(500, "100 рублей")), "100 рублей")
 
 
+@pytest.mark.parametrize("description", ["", " ", "\t\n "])
+def test_blank_item_description_gets_a_precise_python_repair_path(description):
+    data = proposal(items=filled([{
+        "description": description, "quantity": 2, "unit": "шт", "unit_price_rub": 500,
+    }], "2 шт по 500 рублей"))
+    with pytest.raises(ExtractionError) as raised:
+        prepare(data, "Счёт: 2 шт по 500 рублей")
+    assert raised.value.code == "missing_value"
+    assert raised.value.repair_paths == ("items[0].description",)
+
+
 def test_rubles_and_kopecks_are_normalized():
     result = prepare(
         proposal("transfer_draft", amount_rub=filled(1000.21, "1000 рублей 21 копейку")),
@@ -254,3 +265,42 @@ def test_negative_zero_rubles_cannot_support_a_positive_amount():
     text = "-0 рублей 50 копеек"
     with pytest.raises(ExtractionError):
         prepare(proposal("transfer_draft", amount_rub=filled(0.5, text)), text, "transfer_draft")
+
+
+def _total_from(quote_a, quote_b, text):
+    data = proposal(amount_rub=filled(None, text))
+    data["fields"]["amount_rub"]["calculation"] = {"expression": "a + b", "operands": [
+        {"name": "a", "source": {"message_id": "m1", "quote": quote_a}},
+        {"name": "b", "source": {"message_id": "m1", "quote": quote_b}},
+    ]}
+    return data
+
+
+def test_phrase_operand_feedback_asks_for_one_number_per_operand():
+    # Ремонт получает этот текст: фраза вместо числа — не «часть числа».
+    text = "кресла — 5 шт. по 8700 рублей, мониторы по 15 500 рублей"
+    with pytest.raises(ExtractionError) as error:
+        prepare(_total_from("5 шт. по 8700 рублей", "15 500", text), text)
+    assert error.value.code == "invalid_operand"
+    assert "ровно одно число" in str(error.value) and "q1 * p1 + q2 * p2" in str(error.value)
+
+
+def test_part_of_number_operand_keeps_its_own_feedback():
+    text = "кресла по 8700 рублей"
+    with pytest.raises(ExtractionError) as error:
+        prepare(_total_from("700", "8700", text), text)
+    assert error.value.code == "invalid_operand" and "частью числа" in str(error.value)
+
+
+def test_literal_number_feedback_asks_to_move_it_into_an_operand():
+    # Ремонт получает этот текст: процент скидки должен стать операндом с цитатой, а не числом в expression.
+    text = "мониторы — 14 шт. по 15 800 рублей, скидка 5% в итоге"
+    data = proposal(amount_rub=filled(None, text))
+    data["fields"]["amount_rub"]["calculation"] = {"expression": "q * p - q * p * 5 / 100", "operands": [
+        {"name": "q", "source": {"message_id": "m1", "quote": "14"}},
+        {"name": "p", "source": {"message_id": "m1", "quote": "15 800"}},
+    ]}
+    with pytest.raises(ExtractionError) as error:
+        prepare(data, text)
+    assert error.value.code == "invalid_calculation"
+    assert "0, 1, 60, 100, 1000" in str(error.value) and "отдельным операндом" in str(error.value)

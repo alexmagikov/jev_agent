@@ -10,7 +10,7 @@ from src.cases.document_type import DocumentMessage
 from src.schemas.document_schemas import InvoiceFields
 from src.extraction import ExtractionError, ExtractionProposal, prepare_fields
 from src.llm import AsyncLLMExtractor
-from src.main import write_results
+from src.run_artifacts import write_results
 from src.pipeline import process_document
 from src.settings import LLMSettings
 from src.verification import build_verification_questions
@@ -72,8 +72,11 @@ def test_each_item_owns_its_formula_and_final_items_remain_plain():
     assert "items[0].unit_price_rub" in fields.items.derivation
     assert "items[1].unit_price_rub" in fields.items.derivation
     assert "calculation" not in fields.model_dump_json()
-    question = build_verification_questions(fields).root["items::formula_wrong"].model_dump_json()
-    assert "unit_price_calculation" in question
+    questions = build_verification_questions(fields, proposal=original).root
+    question = questions["items[0].unit_price_rub::calculation_operation_wrong"].model_dump_json()
+    assert "instructions.field.calculation" in question
+    assert "items[1].unit_price_rub::calculation_operation_wrong" in questions
+    assert "items::formula_wrong" not in questions
     assert "proposal.calculations" not in question
 
 
@@ -111,7 +114,7 @@ def test_top_level_calculation_merges_all_operand_message_ids():
     result = prepare_fields(ExtractionProposal.model_validate(data), messages, "invoice_draft")
     assert result.amount_rub.value == 12000
     assert result.amount_rub.evidence == ["m1", "m2", "m3"]
-    question = build_verification_questions(result).root["amount_rub::formula_wrong"].model_dump_json()
+    question = build_verification_questions(result, proposal=ExtractionProposal.model_validate(data)).root["amount_rub::calculation_operation_wrong"].model_dump_json()
     assert "instructions.field.calculation" in question
 
 
@@ -150,10 +153,34 @@ def test_nested_calculations_keep_the_total_limit():
         prepare(proposal(items=filled([item() for _ in range(33)])))
 
 
-def test_nested_calculation_does_not_round_implicitly():
+def test_calculated_unit_price_is_rounded_half_up_to_kopecks():
     text = "100 рублей за 3 штуки"
     data = proposal(items=filled([item(
-        quantity=3, unit_price_calculation=calculation(total="100", quantity="3"),
+        quantity=3, unit="штуки", unit_price_calculation=calculation(total="100", quantity="3"),
+    )]))
+    data["fields"]["items"]["evidence"][0]["quote"] = text
+    fields = prepare(data, text)
+    assert fields.items.value[0].unit_price_rub == 33.33
+    assert "rounded_to_kopecks=33.33" in fields.items.derivation
+
+
+def test_calculated_amount_is_rounded_half_up_and_exact_money_is_unchanged():
+    text = "3 штуки по 0,125 рубля"
+    data = proposal(amount_rub=filled(None, calculation("count * price", count="3", price="0,125")))
+    data["fields"]["amount_rub"]["evidence"][0]["quote"] = text
+    fields = prepare(data, text)
+    assert fields.amount_rub.value == .38
+    assert "result=0.375; rounded_to_kopecks=0.38" in fields.amount_rub.derivation
+    exact = prepare(proposal(items=filled([item()])))
+    assert exact.items.value[0].unit_price_rub == 20
+    assert "rounded" not in exact.items.derivation
+
+
+def test_calculated_quantity_is_not_rounded():
+    text = "10 метров на 3 отрезка"
+    data = proposal(items=filled([item(
+        quantity=None, unit_price_calculation=None,
+        quantity_calculation=calculation(total="10", quantity="3"),
     )]))
     data["fields"]["items"]["evidence"][0]["quote"] = text
     with pytest.raises(ExtractionError, match="округления"):
@@ -214,8 +241,8 @@ def test_nested_llm_response_reaches_verifier_and_final_jsonl(tmp_path):
 
     result = asyncio.run(run())
     assert len(checked) == 1
-    assert checked[0].root["items[1].unit_price_rub::value_wrong"].instructions["field"]["calculation"] is not None
-    assert checked[0].root["items[1].unit_price_rub::value_wrong"].instructions["field"]["value"] == 40
+    assert checked[0].root["items[1].unit_price_rub::calculation_operands_wrong"].instructions["field"]["calculation"] is not None
+    assert checked[0].root["items[1].unit_price_rub::calculation_operands_wrong"].instructions["field"]["value"] == 40
     output = tmp_path / "predictions.jsonl"
     write_results([result], output)
     saved = json.loads(output.read_text())

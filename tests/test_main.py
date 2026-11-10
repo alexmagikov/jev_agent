@@ -7,7 +7,8 @@ from typing import Any
 import pytest
 
 from src.cases.document_type import DocumentTypeAnswer, NoneReasonAnswer
-from src.main import InputCase, classify_cases, load_cases, print_metrics, write_results
+from src.main import InputCase, classify_cases, load_cases, print_metrics
+from src.run_artifacts import write_results
 from src.metrics import calculate_metrics
 
 
@@ -133,3 +134,15 @@ def test_print_metrics_reports_no_document_type_mismatches(
     print_metrics(calculate_metrics(rows, rows))
 
     assert "Несовпадений по типу документа нет." in capsys.readouterr().out
+
+
+def test_load_cases_rejects_duplicate_case_id_from_another_split(tmp_path: Path) -> None:
+    input_path = tmp_path / "cases.jsonl"
+    rows = [
+        {"case_id": "C001", "split": "dev", "messages": [{"id": "m1", "role": "user", "text": "Сделай счёт."}]},
+        {"case_id": "C001", "split": "test", "messages": [{"id": "m1", "role": "user", "text": "Отмена."}]},
+    ]
+    input_path.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Повторяющийся case_id"):
+        load_cases(input_path, split="dev")

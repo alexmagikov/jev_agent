@@ -1,3 +1,4 @@
+from src.settings import DecisionModelSettings as ConfiguredDecisionSettings
 import asyncio
 import json
 from types import SimpleNamespace
@@ -75,17 +76,19 @@ def test_sdk_failures_have_safe_batch_semantics(monkeypatch, tmp_path, capsys, s
                 name: {"status": "missing", "value": None, "evidence": []} for name in TransferFields.model_fields}})
 
     monkeypatch.setattr(client_module, "AsyncTypeSafeClient", lambda **kwargs: SDK())
-    monkeypatch.setattr(runner, "JevClientSettings", lambda: SimpleNamespace(api_key=SecretStr("fake")))
+    monkeypatch.setattr(runner, "DecisionModelSettings", lambda: ConfiguredDecisionSettings(_env_file=None, DECISION_API_KEY="fake"))
     monkeypatch.setattr(runner, "LLMSettings", lambda: object())
     monkeypatch.setattr(runner, "PipelineSettings", lambda: PipelineSettings(_env_file=None))
     monkeypatch.setattr(runner, "AsyncLLMExtractor", lambda *args, **kwargs: Extractor())
     if failure == "rate_limit":
         with pytest.raises(PipelineRateLimitError):
-            asyncio.run(runner.main(path, output, labels, mode="full"))
+            asyncio.run(runner.main(path, output, labels, mode="full", verifier="jev"))
         assert {name for name, _ in calls} == {"C1"}
         assert not output.exists()
+        output, = (tmp_path / "out.runs").glob("*/out.jsonl")
+        assert output.read_text() == ""
     else:
-        asyncio.run(runner.main(path, output, labels, mode="full"))
+        output = asyncio.run(runner.main(path, output, labels, mode="full", verifier="jev"))
         assert json.loads(output.read_text())["case_id"] == "C2"
     errors = [json.loads(line) for line in output.with_name("out.errors.jsonl").read_text().splitlines()]
     assert [row["case_id"] for row in errors] == ["C1"]

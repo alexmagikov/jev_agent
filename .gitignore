@@ -228,3 +228,4 @@ notebooks/
 /docs/*
 !/docs/document-output-contract.md
 !/docs/experiment-protocol.md
+!/docs/jev-prompts.md

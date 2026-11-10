@@ -158,7 +158,8 @@ def test_schema_rejection_does_not_silently_fallback_or_retry():
 
 
 def test_prompt_contains_valid_example_without_invented_quantity():
-    from src.llm import EXTRACTION_PROMPT
+    from src.llm import build_extraction_prompt
+    EXTRACTION_PROMPT = build_extraction_prompt("invoice_draft")
 
     example = EXTRACTION_PROMPT.split("<example_output>")[1].split("</example_output>")[0]
     data = json.loads(example)

@@ -28,8 +28,9 @@ def test_verification_sends_structured_claim_and_shared_context_without_duplicat
     assert claim["value"] == 100 and claim["status"] == "fillable"
     assert claim["meaning"] == "Сумма перевода в рублях"
     assert claim["evidence"] == [{"message_id": "m1", "quote": "100 рублей"}]
-    assert "unsupported" in question["criteria"]["true"]
-    assert "absent" in question["criteria"]["false"]
+    assert "unsupported" in question["instructions"]["question"]
+    assert "does not support instructions.field.value" in question["criteria"]["true"]
+    assert "supports instructions.field.value" in question["criteria"]["false"]
     assert all(state["rules"] not in str(q) for q in questions.values())
 
 

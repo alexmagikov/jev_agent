@@ -14,10 +14,9 @@ def labels():
 
 
 @pytest.mark.parametrize("case_id,descriptions", [
-    ("C001", ["консультационная услуга"]),
     ("C006", ["пирожок"]),
-    ("C010", ["услуга"]),
-    ("C012", ["услуга"]),
+    # C001, C010, C012: услуги во множественном числе без количества сохраняются как написано
+    # (tests/test_prompt_consistency.py::test_bare_services_are_labeled_as_written).
     ("C025", ["бумага", "ручка", "папка"]),
 ])
 def test_ordinary_item_labels_use_singular_nominative(labels, case_id, descriptions):
@@ -51,3 +50,12 @@ def test_description_normalization_does_not_change_subject_or_physical_quantity(
     assert fields["subject"]["status"] == "missing"
     assert [item["quantity"] for item in fields["items"]["value"]] == [2, 10, 5]
     assert [item["unit_price_rub"] for item in fields["items"]["value"]] == [500, 100, 200]
+
+
+def test_enumerated_unit_prices_do_not_establish_total_without_quantities(labels):
+    fields = labels["C028"]["fields"]
+    assert fields["amount_rub"] == {
+        "status": "missing", "value": None, "evidence": [], "derivation": None,
+    }
+    assert [item["unit_price_rub"] for item in fields["items"]["value"]] == [100, 100]
+    assert all(item["quantity"] is None for item in fields["items"]["value"])

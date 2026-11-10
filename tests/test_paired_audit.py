@@ -1,9 +1,10 @@
+from src.settings import DecisionModelSettings as ConfiguredDecisionSettings
 import asyncio
 import json
 
 import pytest
 
-from scripts.audit_jev import APICallBudget, AuditBudgetError, AuditJev, BudgetedExtractor, audit_cases, build_report, build_parser
+from scripts.audit_jev import APICallBudget, AuditBudgetError, AuditDecisionModel, BudgetedExtractor, audit_cases, build_report, build_parser
 from src.extraction import ExtractionProposal
 from src.main import InputCase
 from src.schemas.document_schemas import TransferFields
@@ -99,13 +100,13 @@ def test_budget_exhaustion_is_reported_and_does_not_become_a_successful_fallback
     assert report["incomplete_cases"] == ["C1"]
 
 
-def test_api_errors_are_sanitized_and_stop_further_paid_calls():
+def test_api_errors_are_sanitized_and_continue_to_next_case():
     class UnavailableJev:
         async def ainvoke(self, *args):
             raise RuntimeError("DO_NOT_PRINT_SECRET")
 
     records = asyncio.run(audit_cases([case(), case("C2")], Extractor(), UnavailableJev()))
-    assert len(records) == 1 and records[0]["status"] == "api_error"
+    assert len(records) == 2 and all(record["status"] == "api_error" for record in records)
     assert records[0]["after"] is None
     assert "DO_NOT_PRINT_SECRET" not in json.dumps(records)
 
@@ -161,14 +162,14 @@ def test_budget_and_cli_require_explicit_paid_opt_in():
 
 
 @pytest.mark.parametrize(("configured", "expected"), [(None, 2), (0, 0), (2, 2)])
-def test_audit_uses_explicit_counted_429_retries_without_network_retries(configured, expected):
+def test_audit_uses_counted_transport_and_explicit_429_retries(configured, expected):
     from scripts.audit_jev import audit_llm_settings
     from src.settings import LLMSettings
 
     settings = LLMSettings(_env_file=None, LLM_API_KEY="fake", LLM_MODEL="small",
                            LLM_MAX_RETRIES=2, LLM_RATE_LIMIT_RETRIES=configured)
     bounded = audit_llm_settings(settings)
-    assert bounded.max_retries == 0
+    assert bounded.max_retries == 2
     assert bounded.rate_limit_retries == expected
 
 
@@ -293,7 +294,7 @@ def test_jev_audit_collects_real_response_usage_without_a_second_sdk_request():
         def model_dump(self, **kwargs):
             return {}
 
-    client = AuditJev(SDK())
+    client = AuditDecisionModel(SDK())
     response = asyncio.run(client.ainvoke(Data(), Data(), VerificationResponse))
     assert response.answers["amount_rub::unsupported"].noul == 0.1
     assert len(calls) == 1
@@ -484,7 +485,8 @@ def test_partial_seed_trace_skips_failed_baseline_but_never_ignores_changed_dial
 @pytest.mark.parametrize("timeout", [False, True])
 @pytest.mark.parametrize("partial", [False, True])
 @pytest.mark.parametrize("targeted", [False, True])
-def test_saved_seed_cli_wires_recheck_and_writes_a_separate_report(tmp_path, monkeypatch, capsys, timeout, partial, targeted):
+@pytest.mark.parametrize("verifier", ["jev", "decision"])
+def test_saved_seed_cli_wires_recheck_and_writes_a_separate_report(tmp_path, monkeypatch, capsys, timeout, partial, targeted, verifier):
     from types import SimpleNamespace
     from src.llm import LLMUsage
     from src.settings import LLMSettings
@@ -503,7 +505,10 @@ def test_saved_seed_cli_wires_recheck_and_writes_a_separate_report(tmp_path, mon
 
     class SDK:
         def __init__(self, **kwargs):
-            pass
+            assert kwargs["base_url"] == "https://polza.ai/api"
+            assert kwargs["model"] == "typesafe/jev"
+            assert kwargs["timeout"] == 120
+            assert kwargs["retry"].max_retries == 0
         async def __aenter__(self):
             return self
         async def __aexit__(self, *args):
@@ -535,20 +540,20 @@ def test_saved_seed_cli_wires_recheck_and_writes_a_separate_report(tmp_path, mon
 
     settings = LLMSettings(_env_file=None, LLM_API_KEY="fake", LLM_MODEL="small")
     monkeypatch.setattr(module, "LLMSettings", lambda: settings)
-    monkeypatch.setattr(module, "JevClientSettings", lambda: SimpleNamespace(api_key=settings.api_key))
+    monkeypatch.setattr(module, "DecisionModelSettings", lambda: ConfiguredDecisionSettings(_env_file=None, DECISION_API_KEY="fake", DECISION_BASE_URL="https://polza.ai/api", DECISION_MODEL="typesafe/jev"))
     monkeypatch.setattr(module, "AsyncTypeSafeClient", SDK)
-    monkeypatch.setattr(module, "AuditJev", lambda sdk: AcceptingVerifier())
+    monkeypatch.setattr(module, "AuditDecisionModel", lambda sdk: AcceptingVerifier())
     monkeypatch.setattr(module, "BudgetedExtractor", NoGeneration)
     output = tmp_path / "new-audit"
-    args = build_parser().parse_args(["--live", "--input", str(input_path), "--labels", str(labels_path),
-                                     "--seed-trace", str(trace), "--output-dir", str(output)] +
+    args = build_parser().parse_args(["--live", "--verifier", verifier, "--input", str(input_path), "--labels", str(labels_path),
+                                     "--seed-trace", str(trace), "--output-dir", str(output), "--api-retries", "0"] +
                                     (["--allow-missing-seeds"] if partial else []) +
                                     (["--case-id", "C1"] if targeted else []))
     assert asyncio.run(module.run_live(args)) is (not timeout)
     report = json.loads((output / "report.json").read_text())
     if timeout:
         assert report["conclusion"] == "incomplete"
-        assert report["incomplete_cases"] == ["C1"]
+        assert report["incomplete_cases"] == (["C1", "C2"] if partial and not targeted else ["C1"])
         checkpoints = [json.loads(line) for line in (output / "trace.jsonl").read_text().splitlines()]
         assert checkpoints[-1]["status"] == "api_error"
     assert report["selected_cases"] == (["C1", "C2"] if partial and not targeted else ["C1"])
@@ -557,8 +562,13 @@ def test_saved_seed_cli_wires_recheck_and_writes_a_separate_report(tmp_path, mon
     assert report["fresh_seed_cases"] == (["C2"] if partial and not targeted else [])
     assert report["seed_trace_sha256"] and report["field_rules_sha256"]
     assert report["llm_http_calls"] == 0  # NoGeneration is an offline fake, not an HTTP client.
-    assert report["jev_api_calls"] == (2 if partial and not targeted and not timeout else 1)
-    assert "До Jev" in capsys.readouterr().out
+    assert report["verifier_api_calls"] == (2 if partial and not targeted else 1)
+    assert report["verifier_provider"] == verifier
+    if verifier == "jev":
+        assert report["jev_api_calls"] == report["verifier_api_calls"]
+    else:
+        assert "jev_api_calls" not in report
+    assert "До typesafe/jev" in capsys.readouterr().out
     assert trace.read_text() == original
 
 
@@ -575,14 +585,14 @@ def test_sdk_network_oserrors_are_recorded_as_api_errors(kind):
     events = []
     records = asyncio.run(audit_cases(
         [case(), case("C2")], Extractor(), UnavailableJev(),
-        on_event=lambda record: events.append(json.loads(json.dumps(record))),
+        api_retries=0, on_event=lambda record: events.append(json.loads(json.dumps(record))),
     ))
-    assert len(records) == 1
+    assert len(records) == 2
     assert records[0]["status"] == events[-1]["status"] == "api_error"
     assert "PRIVATE_SERVER_BODY" not in json.dumps(events)
-    report = build_report(records, [label()])
+    report = build_report(records, [label(), {**label(), "case_id": "C2"}])
     assert report["conclusion"] == "incomplete"
-    assert report["incomplete_cases"] == ["C1"]
+    assert report["incomplete_cases"] == ["C1", "C2"]
 
 
 def test_audit_checkpoint_oserror_still_propagates():

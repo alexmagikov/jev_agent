@@ -8,11 +8,13 @@ import pytest
 
 from src.cases.document_type import DocumentMessage
 from src.extraction import ExtractionProposal, prepare_fields
-from src.llm import AsyncLLMExtractor, EXTRACTION_PROMPT
+from src.llm import AsyncLLMExtractor, build_extraction_prompt
 from src.pipeline import DocumentTypeDecision, process_selected_document
 from src.schemas.document_schemas import InvoiceFields, TransferFields
 from src.settings import LLMSettings
 from src.verification import build_verification_questions
+
+EXTRACTION_PROMPT = build_extraction_prompt("invoice_draft")
 
 
 def dialogue():
@@ -44,7 +46,7 @@ def test_each_null_item_attribute_gets_its_own_supported_omission_check(attribut
 
 
 def test_missing_price_check_is_not_diluted_by_grammar_or_subject_rules():
-    from src.field_rules import ITEM_UNIT_PRICE_RULE, ITEM_DESCRIPTION_RULE
+    from src.field_rules import ITEM_UNIT_PRICE_RULE, ITEM_DESCRIPTION_RULE, ITEM_DESCRIPTION_SEMANTIC_RULE
 
     questions = build_verification_questions(prepare_fields(candidate(), dialogue(), "invoice_draft")).root
     text = questions["items[0].unit_price_rub::missing_supported"].model_dump_json()
@@ -55,9 +57,12 @@ def test_missing_price_check_is_not_diluted_by_grammar_or_subject_rules():
     assert "unknown quantity" in text
     assert "work fee" in text
     description = questions["items[0].description::value_wrong"].model_dump_json()
-    assert ITEM_DESCRIPTION_RULE in description
+    assert ITEM_DESCRIPTION_SEMANTIC_RULE in description
+    assert ITEM_DESCRIPTION_RULE not in description
     assert "total/count" not in description
-    assert "outer quotation delimiters" in description
+    assert "quoted product name" in description
+    assert "Singular nominative normalization preserves identity" in description
+    assert "Check the required singular" not in description
 
 
 def test_missing_quantity_does_not_authorize_inventing_one_from_a_named_item():

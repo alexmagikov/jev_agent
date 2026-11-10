@@ -62,9 +62,9 @@ def test_calculates_end_to_end_document_and_field_metrics() -> None:
     assert report.fields.false_negatives == 1
     assert report.fields.precision == pytest.approx(1 / 3)
     assert report.fields.recall == pytest.approx(1 / 2)
-    assert report.fields.unsupported_fill_rate == pytest.approx(2 / 3)
+    assert report.fields.overfill_rate == pytest.approx(2 / 3)
     assert report.fields.value_accuracy == 1.0
-    assert report.fields.evidence_accuracy == 1.0
+    assert report.fields.evidence_id_exact_match == 1.0
     assert report.by_document_type["transfer_draft"].false_negatives == 1
 
 
@@ -93,7 +93,7 @@ def test_value_and_evidence_accuracy_use_true_positive_fields() -> None:
     report = calculate_metrics(labels, predictions)
 
     assert report.fields.value_accuracy == 0.5
-    assert report.fields.evidence_accuracy == 0.5
+    assert report.fields.evidence_id_exact_match == 0.5
 
 
 def test_missing_prediction_is_wrong_and_produces_false_negatives() -> None:
@@ -165,7 +165,8 @@ def test_has_no_document_type_mismatches_when_types_match() -> None:
 
 @pytest.mark.parametrize(("name", "expected", "actual", "equivalent"), [
     ("destination_bank", "Сбер", "Сбербанк", True),
-    ("destination_bank", "Сбербанк", "Сбера", True),
+    # Банк приводится к именительному падежу: родительный «Сбера» не считается вариантом.
+    ("destination_bank", "Сбербанк", "Сбера", False),
     ("source_account_kind", "расчётный счёт", "расчётный", True),
     ("destination_bank", "Сбер", "ВТБ", False),
     ("source_account_kind", "расчётный счёт", "накопительный", False),
