@@ -25,7 +25,7 @@ class FieldMetrics(BaseModel):
     precision: float | None
     recall: float | None
     value_accuracy: float | None
-    alias_aware_value_accuracy: float | None = None
+    alias_aware_value_accuracy: float | None = None # Мягкое сравнение (Сбер/Сбербанк и т.д.)
     evidence_id_exact_match: float | None
     overfill_rate: float | None
     expected_values: int

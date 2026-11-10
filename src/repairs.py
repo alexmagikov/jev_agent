@@ -44,9 +44,8 @@ def _source_parts(base: ExtractionProposal) -> dict[str, tuple[SourceQuote, str,
 def source_repair_context(
     base: ExtractionProposal, paths: list[str], messages: list[DocumentMessage],
 ) -> list[dict[str, str]]:
-    """Неточные цитаты из paths вместе с полным текстом исходной реплики пользователя.
-
-    Уже дословные цитаты, пути к message_id и реплики ассистента пропускаются; base не меняется.
+    """Отбирает из путей ремонта именно неточные цитаты и
+    к каждой прикладывает полный текст реплики, откуда её надо было взять.
     """
     sources = _source_parts(base)
     indexed = {message.id: message for message in messages}

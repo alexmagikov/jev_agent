@@ -75,11 +75,11 @@ class PipelineError(RuntimeError):
 
 
 class PipelineRateLimitError(PipelineError):
-    """Пакет нужно остановить, а не отправлять оставшиеся кейсы в ограниченный API."""
+    """Лимит API"""
 
 
 class PipelineRejectionError(PipelineError):
-    """Попытки исчерпаны; диагностика содержит только внутренние коды, не ответ API."""
+    """Попытки извлечения исчерпаны"""
 
     def __init__(self, message: str, *, failure_reason: str, validation_failures: list[dict]):
         super().__init__(message)
@@ -96,7 +96,7 @@ async def process_document(
     max_attempts: int = 2,
     wrong_threshold: float = 0.8,
     use_verifier: bool = True,
-    allow_partial: bool = True,
+    allow_partial: bool = True, # обработать ситуацию, когда попытки закончились
 ) -> DocumentResult:
     """Внешняя модель: классификация -> LLM -> Python -> проверка; без: LLM -> LLM -> Python.
 
