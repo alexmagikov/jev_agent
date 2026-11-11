@@ -54,6 +54,7 @@ def _json(path, value):
 
 
 def prepare_plan(args):
+    """Сборка полного описания эксперимента"""
     if min(args.rounds, args.limit, args.max_llm_calls, args.max_verifier_calls) < 1 or not 0 <= args.api_retries <= 5:
         raise ValueError("Неверные лимиты эксперимента")
     
@@ -117,6 +118,7 @@ def _prefixed(row, number):
 
 
 def summarize(plan, phases, budgets, *, status, stop_reason=None):
+    """Описывает, какие результаты получились."""
     labels = [_prefixed(label, number) for number in range(1, plan.config["rounds"] + 1) for label in plan.labels]
     modes = {mode: calculate_metrics(labels, [
         _prefixed(row, phase["round"]) for phase in phases if phase["mode"] == mode
@@ -156,6 +158,7 @@ def summarize(plan, phases, budgets, *, status, stop_reason=None):
 
 
 async def run_mode(plan, phase, directory, budgets, api_retries, *, on_start=None):
+    """Выполняет одну фазу эксперимента."""
     started = perf_counter()
     mode = phase["mode"]
     verifier = BudgetedDecisionModel(plan.decision, budgets["verifier"], api_retries=api_retries) if mode == "full" else None
@@ -223,6 +226,7 @@ async def run_mode(plan, phase, directory, budgets, api_retries, *, on_start=Non
 
 
 async def run_paired(plan, phase, directory, budgets, api_retries, *, on_start=None):
+    """Проводит парный аудит в одном раунде"""
     directory.mkdir(parents=True, exist_ok=False)
     latest, events = {}, []
     started = perf_counter()

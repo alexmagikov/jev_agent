@@ -22,9 +22,15 @@ from src.request_budget import APICallBudget, APICallBudgetError as AuditBudgetE
 from src.schemas.document_schemas import FIELDS_BY_TYPE, field_root
 from src.main import DEFAULT_INPUT_PATH, DEFAULT_LABELS_PATH, estimate_usage_costs, load_cases, load_labels, print_acceptance_metrics
 from src.metrics import AcceptanceMetrics, calculate_metrics, field_matches
-from src.pipeline import DocumentTypeDecision, PipelineError, PipelineRejectionError, process_selected_document
+from src.pipeline import DocumentTypeDecision, PipelineRejectionError, process_selected_document
 from src.settings import DecisionModelSettings, LLMSettings, PipelineSettings
 from src.verification import VerificationError, parse_check_key
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def file_sha256(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 class AuditResumeError(ValueError):
@@ -36,6 +42,7 @@ class AuditInputError(ValueError):
 
 
 def usage_snapshot(client):
+    """Моментальный снимок расхода счетчиков."""
     usage = getattr(client, "usage", None)
     if not is_dataclass(usage):
         return None
@@ -47,6 +54,7 @@ def usage_snapshot(client):
 
 
 def usage_event(phase, before, after):
+    """Вычисляет расход одного запроса."""
     usage = None
     if before is not None and after is not None:
         usage = {key: after[key] - before[key] for key in after if key != "estimated_cost"}
@@ -146,13 +154,16 @@ def temporary_api_error(error):
 MAX_CONSECUTIVE_OUTAGES = 2
 
 
+def causes(error):
+    """Ошибка и её причины по цепочке raise ... from."""
+    while error is not None:
+        yield error
+        error = error.__cause__
+
+
 def service_unavailable(error):
     """API не ответил после всех повторов: сеть, таймаут или 408/5xx."""
-    while error is not None:
-        if isinstance(error, LLMUnavailableError) or temporary_api_error(error):
-            return True
-        error = error.__cause__
-    return False
+    return any(isinstance(cause, LLMUnavailableError) or temporary_api_error(cause) for cause in causes(error))
 
 
 def api_failure(error):
@@ -160,27 +171,18 @@ def api_failure(error):
 
     Ответ LLM, не прошедший схему или проверки, сюда не относится: это ошибка кейса.
     """
-    while error is not None:
-        if isinstance(error, (LLMUnavailableError, LLMRateLimitError, DecisionModelError,
-                              VerificationError, TypeSafeError)):
-            return True
-        if isinstance(error, LLMError) and not isinstance(error, LLMResponseError) and error.status_code is not None:
-            return True
-        error = error.__cause__
-    return False
+    return any(isinstance(cause, (LLMUnavailableError, LLMRateLimitError, DecisionModelError,
+                                  VerificationError, TypeSafeError))
+               or isinstance(cause, LLMError) and not isinstance(cause, LLMResponseError) and cause.status_code is not None
+               for cause in causes(error))
 
 
 def service_stop(error):
     """Авторизация и лимиты сервиса не лечатся переходом к следующему кейсу."""
-    while error is not None:
-        if isinstance(error, LLMRateLimitError):
-            return True
-        if isinstance(error, LLMError) and error.status_code in (401, 403, 429):
-            return True
-        if isinstance(error, TypeSafeAPIError) and error.status in (401, 403, 429):
-            return True
-        error = error.__cause__
-    return False
+    return any(isinstance(cause, LLMRateLimitError)
+               or isinstance(cause, LLMError) and cause.status_code in (401, 403, 429)
+               or isinstance(cause, TypeSafeAPIError) and cause.status in (401, 403, 429)
+               for cause in causes(error))
 
 
 class AuditDecisionModel:
@@ -250,7 +252,6 @@ async def audit_cases(cases, extractor, jev, *, max_jev_calls=10, max_attempts=2
         records.append(record)
         stage = "baseline"
         outage = False
-        seed = None
         recheck_saved = False
         for key in ("error_type", "failure_reason", "validation_failures"):
             record.pop(key, None)
@@ -268,8 +269,6 @@ async def audit_cases(cases, extractor, jev, *, max_jev_calls=10, max_attempts=2
                 emit(record)
 
         def capture_seed(proposal, fields):
-            nonlocal seed
-            seed = proposal
             record["seed_proposal"] = proposal.model_dump(mode="json")
             record["baseline_pending_extraction"] = None
             emit(record)
@@ -392,7 +391,6 @@ async def audit_cases(cases, extractor, jev, *, max_jev_calls=10, max_attempts=2
                 )
                 record["before"] = before.model_dump(mode="json")
                 emit(record)
-            seed = ExtractionProposal.model_validate(record["seed_proposal"]) if decision.document_type != "none" else None
             if decision.document_type == "none":
                 record.update(after=deepcopy(record["before"]), status="no_document")
             else:
@@ -434,8 +432,6 @@ async def audit_cases(cases, extractor, jev, *, max_jev_calls=10, max_attempts=2
             elif isinstance(error, LLMResponseError):
                 record.update(status="baseline_rejected", failure_reason="invalid_extraction",
                               validation_failures=[{"attempt": 1, "stage": "classification", "code": error.code}])
-            elif isinstance(error, PipelineError) and stage == "enhanced" and error.__cause__ is None:
-                record["status"] = "rejected"
             else:
                 record["status"] = "api_error"
                 stopped = service_stop(error)
@@ -456,6 +452,31 @@ def outcome_status(record):
     return status
 
 
+def read_latest(path):
+    """Читает trace.jsonl и возвращает итоговое состояние каждого кейса - словарь case_id → последняя запись."""
+    latest = {}
+    with path.open(encoding="utf-8") as stream:
+        for line in stream:
+            if line.strip():
+                record = json.loads(line)
+                latest[record["case_id"]] = record
+    return latest
+
+
+def saved_seed(record, case, error, *, check_case_id=False):
+    """Решение и исходный кандидат трассы, если Python-проверка снова даёт сохранённый before."""
+    decision = DocumentTypeDecision.model_validate(record.get("decision"))
+    proposal, checked = None, {}
+    if decision.document_type != "none":
+        proposal = ExtractionProposal.model_validate(record.get("seed_proposal"))
+        checked = prepare_fields(proposal, case.messages, decision.document_type).model_dump(mode="json")
+    before = record["before"]
+    if (before.get("fields") != checked or before.get("document_type") != decision.document_type
+            or check_case_id and before.get("case_id") != case.case_id):
+        raise error(f"Исходный кандидат не соответствует сохранённому результату {case.case_id}")
+    return decision, proposal
+
+
 def validate_resume_records(records, cases):
     """Проверяет сохранённую baseline до любых новых платных вызовов."""
     result = {}
@@ -466,14 +487,7 @@ def validate_resume_records(records, cases):
         if record.get("messages") != [message.model_dump(mode="json") for message in case.messages]:
             raise AuditResumeError(f"Изменился исходный диалог {case.case_id}")
         if record.get("before") is not None:
-            decision = DocumentTypeDecision.model_validate(record.get("decision"))
-            checked = (prepare_fields(ExtractionProposal.model_validate(record.get("seed_proposal")),
-                                     case.messages, decision.document_type).model_dump(mode="json")
-                       if decision.document_type != "none" else {})
-            if (record["before"].get("fields") != checked
-                    or record["before"].get("document_type") != decision.document_type
-                    or record["before"].get("case_id") != case.case_id):
-                raise AuditResumeError(f"Исходный кандидат не соответствует сохранённому результату {case.case_id}")
+            saved_seed(record, case, AuditResumeError, check_case_id=True)
         record["status"] = outcome_status(record)
         if record.get("status") in {"complete", "no_document"} and (
                 record.get("before") is None or record.get("after") is None
@@ -490,11 +504,7 @@ def validate_resume_records(records, cases):
 
 
 def load_resume_records(path, cases):
-    latest = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            record = json.loads(line)
-            latest[record["case_id"]] = record
+    latest = read_latest(path)
     if not latest:
         raise AuditResumeError("В трассе нет контрольных записей")
     result = validate_resume_records(latest, cases)
@@ -505,12 +515,7 @@ def load_resume_records(path, cases):
 
 def load_initial_seeds(path, cases, *, allow_missing=False):
     """Только диалог, решение и исходный кандидат; никакие оценки/эталоны не переносятся."""
-    latest = {}
-    with path.open(encoding="utf-8") as stream:
-        for line in stream:
-            if line.strip():
-                record = json.loads(line)
-                latest[record["case_id"]] = record
+    latest = read_latest(path)
     seeds = {}
     for case in cases:
         record = latest.get(case.case_id)
@@ -520,16 +525,7 @@ def load_initial_seeds(path, cases, *, allow_missing=False):
             if allow_missing:
                 continue
             raise ValueError(f"Нет исходного результата для {case.case_id}")
-        decision = DocumentTypeDecision.model_validate(record.get("decision"))
-        proposal = None
-        if decision.document_type != "none":
-            proposal = ExtractionProposal.model_validate(record.get("seed_proposal"))
-            checked = prepare_fields(proposal, case.messages, decision.document_type).model_dump(mode="json")
-        else:
-            checked = {}
-        if record["before"].get("fields") != checked or record["before"].get("document_type") != decision.document_type:
-            raise ValueError(f"Исходный кандидат не соответствует сохранённому результату {case.case_id}")
-        seeds[case.case_id] = decision, proposal
+        seeds[case.case_id] = saved_seed(record, case, ValueError)
     if allow_missing and not seeds:
         raise ValueError("В trace нет совместимых исходных кандидатов")
     return seeds
@@ -770,15 +766,15 @@ async def run_live(args):
             "decision_input_per_million_usd": getattr(decision_settings, "input_price_per_million", None),
             "decision_output_per_million_usd": getattr(decision_settings, "output_price_per_million", None),
         },
-        "dataset_sha256": hashlib.sha256(args.input.read_bytes()).hexdigest(),
+        "dataset_sha256": file_sha256(args.input),
         "extraction_prompt_sha256": hashlib.sha256(json.dumps({
             kind: build_extraction_prompt(kind) for kind in ("invoice_draft", "transfer_draft")
         }, ensure_ascii=False, sort_keys=True).encode()).hexdigest(),
-        "verification_code_sha256": hashlib.sha256((Path(__file__).resolve().parents[1] / "src/verification.py").read_bytes()).hexdigest(),
-        "field_rules_sha256": hashlib.sha256((Path(__file__).resolve().parents[1] / "src/field_rules.py").read_bytes()).hexdigest(),
-        "verifier_client_sha256": hashlib.sha256((Path(__file__).resolve().parents[1] / "src/client.py").read_bytes()).hexdigest(),
+        "verification_code_sha256": file_sha256(ROOT / "src/verification.py"),
+        "field_rules_sha256": file_sha256(ROOT / "src/field_rules.py"),
+        "verifier_client_sha256": file_sha256(ROOT / "src/client.py"),
         "execution_contract_sha256": hashlib.sha256(json.dumps({
-            name: hashlib.sha256((Path(__file__).resolve().parents[1] / name).read_bytes()).hexdigest()
+            name: file_sha256(ROOT / name)
             for name in ("src/llm.py", "src/pipeline.py", "src/repairs.py", "src/extraction.py",
                          "src/schemas/extraction_schemas.py", "src/schemas/document_schemas.py")
         }, sort_keys=True).encode()).hexdigest(),
