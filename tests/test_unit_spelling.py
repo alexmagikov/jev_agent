@@ -22,9 +22,8 @@ def record(filename):
                 if (row := json.loads(line))["case_id"] == "C060")
 
 
-@pytest.mark.parametrize("filename", ["labels_v2.jsonl", "labels_hard30.jsonl"])
-def test_c060_labels_preserve_explicit_unit_dot_in_both_datasets(filename):
-    label = record(filename)
+def test_c060_labels_preserve_explicit_unit_dot():
+    label = record("labels_v2.jsonl")
     assert [item["unit"] for item in label["fields"]["items"]["value"]] == ["шт.", "шт."]
 
 

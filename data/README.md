@@ -10,10 +10,10 @@
 | --- | --- | --- | ---: | ---: |
 | Исходный | `cases.jsonl` | `labels.jsonl` | 41 | 28 / 13 |
 | Расширенный v2 | `cases_v2.jsonl` | `labels_v2.jsonl` | 81 | 48 / 33 |
-| Стресс-выборка hard30 | `cases_hard30.jsonl` | `labels_hard30.jsonl` | 30 | 17 / 13 |
 | Новые длинные tricky35 | `cases_tricky35.jsonl` | `labels_tricky35.jsonl` | 35 | 18 / 17 |
 | Новая смешанная evaluation50 | `cases_evaluation50.jsonl` | `labels_evaluation50.jsonl` | 50 | 0 / 50 |
 | Сложная challenge | `cases_challenge.jsonl` | `labels_challenge.jsonl` | 104 | 34 / 70 |
+| Внешний ru_invoice | `cases_ru_invoice.jsonl` | `labels_ru_invoice.jsonl` | 50 | 40 / 10 |
 
 Итоговые эксперименты выполнены на evaluation50 и challenge; остальные наборы
 использовались при разработке и остаются регрессионными данными для тестов.
@@ -21,6 +21,15 @@ Challenge — 104 диалога H001–H104 с поправками, отмен
 реквизитами продавца рядом с реквизитами покупателя и длинными разговорами.
 Описание семейств: [challenge.md](challenge.md); манифест — `challenge.manifest.json`.
 Сборка: `uv run --locked python -m scripts.build_challenge_dataset`.
+
+ru_invoice — внешний набор [ru-invoice-extraction-benchmark](https://huggingface.co/datasets/necrasov-ilya/ru-invoice-extraction-benchmark)
+(Apache-2.0; копия ревизии `097b4b17` с лицензией — в `external/ru-invoice-extraction-benchmark`).
+Это 50 текстов готовых счетов другого автора, а не диалоги: каждый подан одной репликой
+«Подготовь черновик счёта по этому документу:» и получателем считается покупатель.
+Эталон есть только для полей бенчмарка (`external_fields` манифеста `ru_invoice.manifest.json`);
+остальные поля — заглушки `missing` для схемы, поэтому встроенные метрики `run_experiment` здесь
+не используются. Оценка — `uv run --locked python -m scripts.score_ru_invoice <папка эксперимента>`,
+отдельно по test и по пяти счетам не в рублях. Сборка: `uv run --locked python -m scripts.build_ru_invoice_dataset`.
 
 Evaluation50 — 25 обычных и 25 сложных новых диалогов E001–E050, без точных
 дубликатов существующих диалогов. Обе группы имеют одинаковый состав: 12 счетов,
@@ -153,54 +162,6 @@ uv run --locked python -m scripts.build_dataset_v2 --check
 
 # Проверить включение исходного набора, схемы, источники и ключевые решения
 uv run --locked python -m pytest -q tests/test_dataset_v2.py
-```
-
-## Стресс-выборка hard30
-
-30 сценариев из v2 выбраны вручную по сочетанию смысловых трудностей: исправления
-и отмены, принадлежность реквизитов, неподтверждённые сведения ассистента,
-неоднозначность, расчёты, единицы, кавычки и цитируемые инструкции. Это 19 счетов,
-8 переводов и 3 случая `none`. Это экспертная стресс-выборка, а не объективный рейтинг
-«30 худших» по ответам одной модели. В неё входят уже разобранные test-кейсы:
-набор пригоден для регрессий и сравнения режимов, но не является новым независимым holdout.
-
-Фиксированный состав и причина выбора каждого кейса находятся в
-`scripts/build_hard30_dataset.py` (`SELECTION`). Диалоги и разметка копируются
-из v2 без изменения строк, ID, порядка, статусов, значений и исходных `split`.
-Причины выбора и эталоны не добавляются во входные сообщения модели.
-Исходные файлы v2 не перезаписываются.
-
-Полный состав: C004, C026, C027, C042, C043, C044, C046, C047, C049, C051,
-C052, C053, C055, C057, C059, C060, C063, C064, C065, C066, C067, C068,
-C070, C072, C073, C074, C075, C076, C078, C081.
-
-Из корня `jev-agent`, все 30 кейсов (без `--fail-fast`, чтобы собрать все ошибки):
-
-```bash
-uv run --locked python -m src.main \
-  --mode full --verifier decision \
-  --input data/cases_hard30.jsonl --labels data/labels_hard30.jsonl \
-  --split all --output outputs/hard30-full.jsonl
-
-uv run --locked python -m src.main \
-  --mode llm-only \
-  --input data/cases_hard30.jsonl --labels data/labels_hard30.jsonl \
-  --split all --output outputs/hard30-llm-only.jsonl
-```
-
-`full --verifier decision` использует `DECISION_*` из окружения/`.env`;
-для Jev укажите `DECISION_MODEL=typesafe/jev`. Оба режима используют одинаковые
-`LLM_*` и настройки попыток. Выходные файлы разделены; повтор той же команды
-перезаписывает результат именно этого режима. Команды выше выполняют платные API-запросы;
-при создании этой выборки модели не вызывались.
-
-```bash
-# Пересобрать только hard30 из текущего v2
-uv run --locked python -m scripts.build_hard30_dataset
-
-# Проверить точное соответствие источнику без записи и без API
-uv run --locked python -m scripts.build_hard30_dataset --check
-uv run --locked python -m pytest -q tests/test_hard30_dataset.py
 ```
 
 ## Новые длинные сценарии tricky35

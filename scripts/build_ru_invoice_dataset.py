@@ -64,8 +64,9 @@ def convert(split, row):
         recipient_name=fill(expected["buyer"]["name"], "m1"),
         recipient_inn=fill(expected["buyer"]["tax_id"], "m1"),
         # В счёте не в рублях цена и итог в другой валюте: рублёвых значений в документе нет.
+        # Строка с отрицательной ценой — скидка: как в пайплайне, она не позиция и уже учтена в итоге.
         items=fill([item(i["description"], i["quantity"], i["unit"], i["unit_price"] if rub else None)
-                    for i in expected["line_items"]], "m1"),
+                    for i in expected["line_items"] if i["unit_price"] >= 0], "m1"),
         amount_rub=fill(expected["total_amount"], "m1") if rub else unfilled(),
         vat_mode=vat_mode, vat_rate_percent=vat_rate,
     )
@@ -95,6 +96,7 @@ def build_contents():
         "rules": {
             "recipient": "buyer of the source invoice",
             "non_rub": "amount_rub missing and unit_price_rub null; scored separately, not as accuracy",
+            "discount_lines": "negative-price lines are discounts: not items, already included in total_amount",
             "vat": {key: [mode["value"], rate["status"], rate["value"]] for key, (mode, rate) in VAT.items()},
         },
         "case_count": len(cases),

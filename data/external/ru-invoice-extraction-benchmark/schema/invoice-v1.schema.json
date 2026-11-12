@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/necrasov-ilya/alice-extractor/schemas/invoice-v1.schema.json",
+  "title": "Russian invoice extraction result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "document_type",
+    "invoice_number",
+    "invoice_date",
+    "supplier",
+    "buyer",
+    "currency",
+    "subtotal",
+    "vat_amount",
+    "total_amount",
+    "line_items"
+  ],
+  "properties": {
+    "document_type": {
+      "const": "invoice"
+    },
+    "invoice_number": {
+      "type": ["string", "null"]
+    },
+    "invoice_date": {
+      "type": ["string", "null"],
+      "format": "date"
+    },
+    "supplier": {
+      "$ref": "#/$defs/party"
+    },
+    "buyer": {
+      "$ref": "#/$defs/party"
+    },
+    "currency": {
+      "type": ["string", "null"],
+      "pattern": "^[A-Z]{3}$"
+    },
+    "subtotal": {
+      "type": ["number", "null"]
+    },
+    "vat_amount": {
+      "type": ["number", "null"]
+    },
+    "total_amount": {
+      "type": ["number", "null"]
+    },
+    "line_items": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/line_item"
+      }
+    }
+  },
+  "$defs": {
+    "party": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "tax_id"],
+      "properties": {
+        "name": {
+          "type": ["string", "null"]
+        },
+        "tax_id": {
+          "type": ["string", "null"],
+          "pattern": "^(?:[0-9]{10}|[0-9]{12})$"
+        }
+      }
+    },
+    "line_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "quantity", "unit", "unit_price", "line_total"],
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "quantity": {
+          "type": ["number", "null"]
+        },
+        "unit": {
+          "type": ["string", "null"]
+        },
+        "unit_price": {
+          "type": ["number", "null"]
+        },
+        "line_total": {
+          "type": ["number", "null"]
+        }
+      }
+    }
+  }
+}

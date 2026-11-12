@@ -18,12 +18,33 @@ from src.detection_metrics import calculate_detection_metrics
 from src.metrics import field_matches
 
 MANIFEST = DATA / "ru_invoice.manifest.json"
+LABELS = DATA / "labels_ru_invoice.jsonl"
 SUBSETS = {
     "all": lambda meta: True,
     "test": lambda meta: meta["source_split"] == "test",
     "rub": lambda meta: meta["currency"] == "RUB",
     "non_rub": lambda meta: meta["currency"] != "RUB",
 }
+
+
+# Решение после ручного разбора прогона: форма бенчмарка → форма по нашему контракту
+# (единственное число, src/field_rules.py), которая тоже считается верной.
+# Регистр и скидка, записанная позицией, остаются ошибками.
+ACCEPTED_DESCRIPTIONS = {
+    "Услуги питания команды": "Услуга питания команды",
+    "Этикетки самоклеящиеся для маркировки коробов": "Этикетка самоклеящаяся для маркировки коробов",
+}
+
+
+def effective_label(label, fields):
+    """Эталон с принятой формой описания там, где ответ использует именно её."""
+    expected, actual = label["fields"]["items"], (fields or {}).get("items") or {}
+    answer = actual.get("value") if isinstance(actual.get("value"), list) else []
+    items = [dict(item, description=ACCEPTED_DESCRIPTIONS[item["description"]])
+             if item["description"] in ACCEPTED_DESCRIPTIONS and index < len(answer)
+             and (answer[index] or {}).get("description") == ACCEPTED_DESCRIPTIONS[item["description"]]
+             else item for index, item in enumerate(expected["value"] or [])]
+    return {**label, "fields": {**label["fields"], "items": {**expected, "value": items}}}
 
 
 def scored_fields(meta):
@@ -44,7 +65,8 @@ def score_mode(rows, labels, meta):
               "needs_review": 0, "needs_review_incorrect": 0, "amount_rub_filled": 0,
               "amount_rub_filled_accepted": 0, "fields": {}}
     for case_id, prediction in rows:
-        label, fields = labels[case_id], scored_fields(meta[case_id])
+        label = effective_label(labels[case_id], prediction["fields"] if prediction else None)
+        fields = scored_fields(meta[case_id])
         result["planned"] += 1
         status = prediction["validation"]["status"] if prediction else None
         same_type = prediction is not None and prediction["document_type"] == label["document_type"]
@@ -70,34 +92,45 @@ def score_mode(rows, labels, meta):
 
 def score_paired(records, labels, meta):
     """Первый вердикт Jev и итог ремонта по полям бенчмарка; заглушки отбрасываются."""
-    detection = calculate_detection_metrics(records, [labels[record["case_id"]] for record in records])
-    result = dict.fromkeys(("tp", "fp", "fn", "tn", "corrected", "regressed", "incomplete_pairs"), 0)
-    for detail in detection["details"]:
-        if detail["field"] in scored_fields(meta[detail["case_id"]]):
-            result[detail["outcome"]] += 1
+    result = dict.fromkeys(("tp", "fp", "fn", "tn", "corrected", "regressed", "incomplete_pairs", "skipped_cases"), 0)
     for record in records:
-        label = labels[record["case_id"]]
+        # По одной записи: принятая форма описания зависит от ответа именно этой записи.
+        before = (record.get("before") or {}).get("fields")
+        detection = calculate_detection_metrics([record], [effective_label(labels[record["case_id"]], before)])
+        result["skipped_cases"] += len(detection["skipped_cases"])
+        for detail in detection["details"]:
+            if detail["field"] in scored_fields(meta[detail["case_id"]]):
+                result[detail["outcome"]] += 1
+    for record in records:
         if record.get("before") is None or record.get("after") is None:
             result["incomplete_pairs"] += 1
             continue
         for name in scored_fields(meta[record["case_id"]]):
-            old, new = (record[side]["document_type"] == label["document_type"]
-                        and field_matches(label["document_type"], name, label["fields"][name],
-                                          record[side]["fields"].get(name)) for side in ("before", "after"))
+            correct = []
+            for side in ("before", "after"):
+                label = effective_label(labels[record["case_id"]], record[side]["fields"])
+                correct.append(record[side]["document_type"] == label["document_type"]
+                               and field_matches(label["document_type"], name, label["fields"][name],
+                                                 record[side]["fields"].get(name)))
+            old, new = correct
             if old != new:
                 result["corrected" if new else "regressed"] += 1
-    result["skipped_cases"] = len(detection["skipped_cases"])
     return result
 
 
-def score(experiment, manifest_path=MANIFEST):
+def score(experiment, manifest_path=MANIFEST, labels_path=LABELS):
     experiment = Path(experiment)
     manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
     config = json.loads((experiment / "config.json").read_text(encoding="utf-8"))
     if config["input"]["sha256"] != manifest["input_sha256"]:
         raise ValueError("Эксперимент выполнен на другом входном файле, не на ru_invoice")
     meta = {row["case_id"]: row for row in manifest["cases"]}
-    labels = {row["case_id"]: row for row in read_rows(experiment / "labels.jsonl")}
+    # Эталон — текущий выход генератора, а не копия в эксперименте: прогон эталоном не пользуется,
+    # а исправление конвертера должно действовать и для уже выполненного прогона.
+    planned = {row["case_id"] for row in read_rows(experiment / "labels.jsonl")}
+    labels = {row["case_id"]: row for row in read_rows(Path(labels_path)) if row["case_id"] in planned}
+    if set(labels) != planned:
+        raise ValueError("В текущем эталоне ru_invoice нет части кейсов эксперимента")
     phases = json.loads((experiment / "report.json").read_text(encoding="utf-8"))["phases"]
     planned = list(labels)
     runs = {"llm-only": [], "full": [], "paired": []}

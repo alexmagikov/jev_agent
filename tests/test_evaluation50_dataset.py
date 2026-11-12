@@ -36,7 +36,7 @@ def test_new_mixed_scenarios_are_balanced_interleaved_and_not_old_dialogues(data
             "invoice_draft": 12, "transfer_draft": 8, "none": 5,
         }
     dialogues = {tuple((m.role, " ".join(m.text.casefold().split())) for m in case.messages) for case in cases}
-    for name in ("cases.jsonl", "cases_v2.jsonl", "cases_hard30.jsonl", "cases_tricky35.jsonl"):
+    for name in ("cases.jsonl", "cases_v2.jsonl", "cases_tricky35.jsonl"):
         old = load_cases(builder.DATA / name, "all")
         assert not {case.case_id for case in old} & set(labels)
         assert not dialogues & {tuple((m.role, " ".join(m.text.casefold().split())) for m in case.messages) for case in old}

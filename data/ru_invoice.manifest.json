@@ -1,0 +1,478 @@
+{
+  "dataset_version": 1,
+  "name": "ru_invoice",
+  "synthetic": true,
+  "authorship": "external benchmark, converted by scripts/build_ru_invoice_dataset.py",
+  "source": {
+    "name": "necrasov-ilya/ru-invoice-extraction-benchmark",
+    "url": "https://huggingface.co/datasets/necrasov-ilya/ru-invoice-extraction-benchmark",
+    "revision": "097b4b1789ff6b90d1077cc5f67bff28e79b5fad",
+    "license": "Apache-2.0",
+    "sha256": {
+      "data/development.jsonl": "586b4929be151fbc790b630e6c84cf0f7f4b09c8523ac9d6ebb5f7ef16b0d588",
+      "data/validation.jsonl": "aae3b597e562a65d581084b9fa91ca48b886e8e1604dec4301f408e485ff0f8f",
+      "data/test.jsonl": "7a5554a4e567efdffdcff6ad4c158cdf6a9c22d2d587d215cccbd58096f41f7f",
+      "schema/invoice-v1.schema.json": "7b0d13a360e1a2823aeb030feba9768e03fb7d72c84d22cbfff300d82e731fba",
+      "LICENSE": "50e6751797c50dedd75ef1b8a0d9e42f5f8472e9fbce91f34718e9f97b0c780a"
+    }
+  },
+  "input_template": "Подготовь черновик счёта по этому документу:\n\n{text}",
+  "split_mapping": {
+    "development": "dev",
+    "validation": "dev",
+    "test": "test"
+  },
+  "external_fields": [
+    "recipient_name",
+    "recipient_inn",
+    "items",
+    "amount_rub",
+    "vat_mode",
+    "vat_rate_percent"
+  ],
+  "placeholder_fields": [
+    "recipient_email",
+    "recipient_account",
+    "recipient_bik",
+    "subject",
+    "basis_number",
+    "basis_date"
+  ],
+  "rules": {
+    "recipient": "buyer of the source invoice",
+    "non_rub": "amount_rub missing and unit_price_rub null; scored separately, not as accuracy",
+    "discount_lines": "negative-price lines are discounts: not items, already included in total_amount",
+    "vat": {
+      "standard_20": [
+        "rate",
+        "fillable",
+        20
+      ],
+      "reduced_10": [
+        "rate",
+        "fillable",
+        10
+      ],
+      "zero_rate": [
+        "rate",
+        "fillable",
+        0
+      ],
+      "exempt": [
+        "no_vat",
+        "missing",
+        null
+      ],
+      "mixed_10_20": [
+        "rate",
+        "ambiguous",
+        null
+      ]
+    }
+  },
+  "case_count": 50,
+  "input_sha256": "56db9d463aa9a00591e670d8dd530ba46335cc801c01818f6599137963200d82",
+  "labels_sha256": "c7cf727225eebdf26045e4a75943c095e0df3fc972124c0bc537588b9e386e12",
+  "cases": [
+    {
+      "case_id": "invoice-001",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "classic_table",
+      "item_count": 3
+    },
+    {
+      "case_id": "invoice-002",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "classic_table",
+      "item_count": 2
+    },
+    {
+      "case_id": "invoice-003",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "reduced_10",
+      "template_family": "classic_table",
+      "item_count": 3
+    },
+    {
+      "case_id": "invoice-004",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "zero_rate",
+      "template_family": "classic_table",
+      "item_count": 2
+    },
+    {
+      "case_id": "invoice-005",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "classic_table",
+      "item_count": 5
+    },
+    {
+      "case_id": "invoice-006",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "exempt",
+      "template_family": "classic_table",
+      "item_count": 2
+    },
+    {
+      "case_id": "invoice-007",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "classic_table",
+      "item_count": 3
+    },
+    {
+      "case_id": "invoice-008",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "classic_table",
+      "item_count": 1
+    },
+    {
+      "case_id": "invoice-009",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "reduced_10",
+      "template_family": "classic_table",
+      "item_count": 4
+    },
+    {
+      "case_id": "invoice-010",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "classic_table",
+      "item_count": 3
+    },
+    {
+      "case_id": "invoice-011",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "discounted_table",
+      "item_count": 3
+    },
+    {
+      "case_id": "invoice-012",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "reduced_10",
+      "template_family": "compact_table",
+      "item_count": 3
+    },
+    {
+      "case_id": "invoice-013",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "exempt",
+      "template_family": "numbered_list",
+      "item_count": 2
+    },
+    {
+      "case_id": "invoice-014",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "compact_table",
+      "item_count": 3
+    },
+    {
+      "case_id": "invoice-015",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "mixed_10_20",
+      "template_family": "vat_table",
+      "item_count": 3
+    },
+    {
+      "case_id": "invoice-016",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "exempt",
+      "template_family": "coded_table",
+      "item_count": 3
+    },
+    {
+      "case_id": "invoice-017",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "numbered_list",
+      "item_count": 3
+    },
+    {
+      "case_id": "invoice-018",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "discounted_table",
+      "item_count": 3
+    },
+    {
+      "case_id": "invoice-019",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "sectioned_list",
+      "item_count": 3
+    },
+    {
+      "case_id": "invoice-020",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "discounted_table",
+      "item_count": 3
+    },
+    {
+      "case_id": "invoice-021",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "multiline_table",
+      "item_count": 5
+    },
+    {
+      "case_id": "invoice-022",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "exempt",
+      "template_family": "classic_table",
+      "item_count": 4
+    },
+    {
+      "case_id": "invoice-023",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "reduced_10",
+      "template_family": "classic_table",
+      "item_count": 6
+    },
+    {
+      "case_id": "invoice-024",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "discounted_table",
+      "item_count": 5
+    },
+    {
+      "case_id": "invoice-025",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "prepayment_table",
+      "item_count": 4
+    },
+    {
+      "case_id": "invoice-026",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "correction_table",
+      "item_count": 4
+    },
+    {
+      "case_id": "invoice-027",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "exempt",
+      "template_family": "classic_table",
+      "item_count": 4
+    },
+    {
+      "case_id": "invoice-028",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "multiline_table",
+      "item_count": 5
+    },
+    {
+      "case_id": "invoice-029",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "classic_table",
+      "item_count": 4
+    },
+    {
+      "case_id": "invoice-030",
+      "source_split": "development",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "classic_table",
+      "item_count": 5
+    },
+    {
+      "case_id": "invoice-031",
+      "source_split": "validation",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "discounted_table",
+      "item_count": 5
+    },
+    {
+      "case_id": "invoice-032",
+      "source_split": "validation",
+      "currency": "RUB",
+      "vat_mode": "reduced_10",
+      "template_family": "coded_table",
+      "item_count": 6
+    },
+    {
+      "case_id": "invoice-033",
+      "source_split": "validation",
+      "currency": "RUB",
+      "vat_mode": "exempt",
+      "template_family": "order_table",
+      "item_count": 3
+    },
+    {
+      "case_id": "invoice-034",
+      "source_split": "validation",
+      "currency": "RUB",
+      "vat_mode": "zero_rate",
+      "template_family": "export_specification",
+      "item_count": 4
+    },
+    {
+      "case_id": "invoice-035",
+      "source_split": "validation",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "contract_table",
+      "item_count": 2
+    },
+    {
+      "case_id": "invoice-036",
+      "source_split": "validation",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "discounted_table",
+      "item_count": 5
+    },
+    {
+      "case_id": "invoice-037",
+      "source_split": "validation",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "coded_table",
+      "item_count": 6
+    },
+    {
+      "case_id": "invoice-038",
+      "source_split": "validation",
+      "currency": "RUB",
+      "vat_mode": "reduced_10",
+      "template_family": "discounted_table",
+      "item_count": 6
+    },
+    {
+      "case_id": "invoice-039",
+      "source_split": "validation",
+      "currency": "RUB",
+      "vat_mode": "exempt",
+      "template_family": "payment_request",
+      "item_count": 2
+    },
+    {
+      "case_id": "invoice-040",
+      "source_split": "validation",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "coded_table",
+      "item_count": 5
+    },
+    {
+      "case_id": "invoice-041",
+      "source_split": "test",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "specification",
+      "item_count": 6
+    },
+    {
+      "case_id": "invoice-042",
+      "source_split": "test",
+      "currency": "USD",
+      "vat_mode": "standard_20",
+      "template_family": "numbered_list",
+      "item_count": 5
+    },
+    {
+      "case_id": "invoice-043",
+      "source_split": "test",
+      "currency": "EUR",
+      "vat_mode": "reduced_10",
+      "template_family": "reordered_table",
+      "item_count": 4
+    },
+    {
+      "case_id": "invoice-044",
+      "source_split": "test",
+      "currency": "CNY",
+      "vat_mode": "exempt",
+      "template_family": "sectioned_table",
+      "item_count": 7
+    },
+    {
+      "case_id": "invoice-045",
+      "source_split": "test",
+      "currency": "RUB",
+      "vat_mode": "standard_20",
+      "template_family": "numbered_list",
+      "item_count": 8
+    },
+    {
+      "case_id": "invoice-046",
+      "source_split": "test",
+      "currency": "RUB",
+      "vat_mode": "exempt",
+      "template_family": "compact_table",
+      "item_count": 2
+    },
+    {
+      "case_id": "invoice-047",
+      "source_split": "test",
+      "currency": "USD",
+      "vat_mode": "standard_20",
+      "template_family": "classic_table",
+      "item_count": 6
+    },
+    {
+      "case_id": "invoice-048",
+      "source_split": "test",
+      "currency": "RUB",
+      "vat_mode": "reduced_10",
+      "template_family": "discounted_table",
+      "item_count": 6
+    },
+    {
+      "case_id": "invoice-049",
+      "source_split": "test",
+      "currency": "EUR",
+      "vat_mode": "exempt",
+      "template_family": "compact_table",
+      "item_count": 3
+    },
+    {
+      "case_id": "invoice-050",
+      "source_split": "test",
+      "currency": "RUB",
+      "vat_mode": "mixed_10_20",
+      "template_family": "vat_table",
+      "item_count": 6
+    }
+  ]
+}
